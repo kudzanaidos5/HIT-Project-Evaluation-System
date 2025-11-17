@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env.example
+    ports:
+      - "5000:5000"
+    volumes:
+      - ../apps/api:/app
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env.example
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../apps/web:/app
+    depends_on:
+      - api
+

@@ -2,85 +2,73 @@
 
 import React, { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser } from '../../lib/hooks'
-import { useAuthStore, useThemeStore } from '../../lib/stores'
+import { useStudyPrograms, useCreateStudyProgram, useUpdateStudyProgram, useDeleteStudyProgram } from '../../lib/hooks'
+import { useThemeStore } from '../../lib/stores'
 
-interface UserFormData {
+interface StudyProgramFormData {
+  code: string
   name: string
-  email: string
-  password: string
-  role: 'ADMIN' | 'STUDENT'
+  description: string
 }
 
-export default function UserManagementPage() {
-  const { user: currentUser } = useAuthStore()
+export default function StudyProgramManagementPage() {
   const { isDarkMode } = useThemeStore()
-  const { data: users, isLoading, error } = useUsers()
-  const createUserMutation = useCreateUser()
-  const updateUserMutation = useUpdateUser()
-  const deleteUserMutation = useDeleteUser()
+  const { data: studyPrograms, isLoading, error } = useStudyPrograms()
+  const createStudyProgramMutation = useCreateStudyProgram()
+  const updateStudyProgramMutation = useUpdateStudyProgram()
+  const deleteStudyProgramMutation = useDeleteStudyProgram()
 
   const [modalOpen, setModalOpen] = useState(false)
-  const [editingUser, setEditingUser] = useState<any>(null)
-  const [modalTitle, setModalTitle] = useState('Add New User')
+  const [editingStudyProgram, setEditingStudyProgram] = useState<any>(null)
+  const [modalTitle, setModalTitle] = useState('Add New Study Program')
 
-  const { register, handleSubmit, formState: { errors }, reset, setValue } = useForm<UserFormData>()
+  const { register, handleSubmit, formState: { errors }, reset, setValue } = useForm<StudyProgramFormData>()
 
   const openCreateModal = () => {
-    setEditingUser(null)
-    setModalTitle('Add New User')
+    setEditingStudyProgram(null)
+    setModalTitle('Add New Study Program')
     setModalOpen(true)
     reset()
   }
 
-  const openEditModal = (user: any) => {
-    setEditingUser(user)
-    setModalTitle('Edit User')
+  const openEditModal = (studyProgram: any) => {
+    setEditingStudyProgram(studyProgram)
+    setModalTitle('Edit Study Program')
     setModalOpen(true)
-    setValue('name', user.name)
-    setValue('email', user.email)
-    setValue('role', user.role)
+    setValue('code', studyProgram.code)
+    setValue('name', studyProgram.name)
+    setValue('description', studyProgram.description || '')
   }
 
   const closeModal = () => {
     setModalOpen(false)
-    setEditingUser(null)
+    setEditingStudyProgram(null)
     reset()
   }
 
-  const onSubmit = async (data: UserFormData) => {
+  const onSubmit = async (data: StudyProgramFormData) => {
     try {
-      if (editingUser) {
-        await updateUserMutation.mutateAsync({
-          id: editingUser.id,
-          data: {
-            name: data.name,
-            email: data.email,
-            role: data.role,
-            ...(data.password && { password: data.password })
-          }
+      if (editingStudyProgram) {
+        await updateStudyProgramMutation.mutateAsync({
+          id: editingStudyProgram.id,
+          data
         })
       } else {
-        await createUserMutation.mutateAsync(data)
+        await createStudyProgramMutation.mutateAsync(data)
       }
       
-      alert(editingUser ? 'User updated successfully!' : 'User created successfully!')
+      alert(editingStudyProgram ? 'Study program updated successfully!' : 'Study program created successfully!')
       closeModal()
     } catch (error: any) {
       alert(`Error: ${error.message}`)
     }
   }
 
-  const handleDelete = async (userId: number) => {
-    if (userId === currentUser?.id) {
-      alert('You cannot delete your own account')
-      return
-    }
-
-    if (confirm('Are you sure you want to delete this user?')) {
+  const handleDelete = async (studyProgramId: number) => {
+    if (confirm('Are you sure you want to delete this study program?')) {
       try {
-        await deleteUserMutation.mutateAsync(userId)
-        alert('User deleted successfully!')
+        await deleteStudyProgramMutation.mutateAsync(studyProgramId)
+        alert('Study program deleted successfully!')
       } catch (error: any) {
         alert(`Error: ${error.message}`)
       }
@@ -98,9 +86,9 @@ export default function UserManagementPage() {
               </svg>
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-red-800">Error loading users</h3>
+              <h3 className="text-sm font-medium text-red-800">Error loading study programs</h3>
               <div className="mt-2 text-sm text-red-700">
-                <p>Unable to load users data. Please try refreshing the page.</p>
+                <p>Unable to load study programs data. Please try refreshing the page.</p>
               </div>
             </div>
           </div>
@@ -114,31 +102,31 @@ export default function UserManagementPage() {
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
         <div>
           <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg">
+            <div className="p-2 bg-gradient-to-br from-purple-500 to-pink-600 rounded-xl shadow-lg">
               <svg className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             </div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-              User Management
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+              Study Program Management
             </h1>
           </div>
-          <p className="text-gray-600 dark:text-gray-400 ml-14">Manage system users and their roles</p>
+          <p className="text-gray-600 dark:text-gray-400 ml-14">Manage study programs and their details</p>
         </div>
         <button
           onClick={openCreateModal}
-          className="px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 shadow-lg hover:shadow-xl transition-all flex items-center gap-2 font-semibold"
+          className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg hover:from-purple-700 hover:to-pink-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 shadow-lg hover:shadow-xl transition-all flex items-center gap-2 font-semibold"
         >
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
           </svg>
-          Add User
+          Add Study Program
         </button>
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">Users List</h3>
+          <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">Study Programs List</h3>
         </div>
         {isLoading ? (
           <div className="p-6 space-y-4">
@@ -148,19 +136,22 @@ export default function UserManagementPage() {
               </div>
             ))}
           </div>
-        ) : users && users.length > 0 ? (
+        ) : studyPrograms && studyPrograms.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
               <thead className="bg-gray-50 dark:bg-gray-900">
                 <tr>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Name
+                    Study Program Code
                   </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Email
+                    Study Program Name
                   </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Role
+                    Description
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Projects
                   </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Created
@@ -171,40 +162,36 @@ export default function UserManagementPage() {
                 </tr>
               </thead>
               <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {users.map((user: any) => (
-                  <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                {studyPrograms.map((studyProgram: any) => (
+                  <tr key={studyProgram.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {user.name}
-                      {user.id === currentUser?.id && (
-                        <span className="ml-2 text-xs text-blue-600 dark:text-blue-400 font-semibold">(You)</span>
-                      )}
+                      {studyProgram.code}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      {user.email}
+                      {studyProgram.name}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <span className={`px-3 py-1 inline-flex text-xs leading-5 font-bold rounded-full ${
-                        user.role === 'ADMIN' 
-                          ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300' 
-                          : 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300'
-                      }`}>
-                        {user.role}
+                    <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-xs truncate">
+                      {studyProgram.description || 'No description'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                      <span className="px-3 py-1 text-xs font-bold bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-full">
+                        {studyProgram.project_count || 0} projects
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      {new Date(user.created_at).toLocaleDateString()}
+                      {new Date(studyProgram.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <button
-                        onClick={() => openEditModal(user)}
+                        onClick={() => openEditModal(studyProgram)}
                         className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-900 dark:hover:text-indigo-300 mr-4 font-semibold transition-colors"
                       >
                         Edit
                       </button>
                       <button
-                        onClick={() => handleDelete(user.id)}
+                        onClick={() => handleDelete(studyProgram.id)}
                         className="text-red-600 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300 transition-colors"
-                        disabled={user.id === currentUser?.id}
+                        disabled={studyProgram.project_count > 0}
                       >
                         Delete
                       </button>
@@ -217,15 +204,15 @@ export default function UserManagementPage() {
         ) : (
           <div className="text-center py-12">
             <svg className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
             </svg>
-            <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-gray-100">No users found</h3>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Get started by creating a new user.</p>
+            <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-gray-100">No study programs found</h3>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Get started by creating a new study program.</p>
           </div>
         )}
       </div>
 
-      {/* User Form Modal */}
+      {/* Study Program Form Modal */}
       <div className={`modal ${modalOpen ? 'active' : ''}`}>
         <div className="modal-content">
           <div className="modal-header">
@@ -235,11 +222,31 @@ export default function UserManagementPage() {
 
           <form onSubmit={handleSubmit(onSubmit)}>
             <div className="form-group">
-              <label className="form-label">Full Name</label>
+              <label className="form-label">Study Program Code</label>
               <input
                 type="text"
                 className="form-input"
-                {...register('name', { required: 'Name is required' })}
+                placeholder="e.g., CSC 201"
+                {...register('code', { 
+                  required: 'Study program code is required',
+                  pattern: {
+                    value: /^[A-Z]{3}\s\d{3}$/,
+                    message: 'Study program code must be in format "ABC 123"'
+                  }
+                })}
+              />
+              {errors.code && (
+                <p className="text-red-500 text-sm mt-1">{errors.code.message}</p>
+              )}
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Study Program Name</label>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="e.g., Computer Science"
+                {...register('name', { required: 'Study program name is required' })}
               />
               {errors.name && (
                 <p className="text-red-500 text-sm mt-1">{errors.name.message}</p>
@@ -247,54 +254,13 @@ export default function UserManagementPage() {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Email</label>
-              <input
-                type="email"
-                className="form-input"
-                {...register('email', { 
-                  required: 'Email is required',
-                  pattern: {
-                    value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
-                    message: 'Invalid email address'
-                  }
-                })}
+              <label className="form-label">Description</label>
+              <textarea
+                className="form-textarea"
+                placeholder="Study program description (optional)"
+                rows={3}
+                {...register('description')}
               />
-              {errors.email && (
-                <p className="text-red-500 text-sm mt-1">{errors.email.message}</p>
-              )}
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Password</label>
-              <input
-                type="password"
-                className="form-input"
-                {...register('password', { 
-                  required: editingUser ? false : 'Password is required',
-                  minLength: {
-                    value: 6,
-                    message: 'Password must be at least 6 characters'
-                  }
-                })}
-                placeholder={editingUser ? 'Leave blank to keep current password' : ''}
-              />
-              {errors.password && (
-                <p className="text-red-500 text-sm mt-1">{errors.password.message}</p>
-              )}
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Role</label>
-              <select
-                className="form-select"
-                {...register('role', { required: 'Role is required' })}
-              >
-                <option value="STUDENT">Student</option>
-                <option value="ADMIN">Admin</option>
-              </select>
-              {errors.role && (
-                <p className="text-red-500 text-sm mt-1">{errors.role.message}</p>
-              )}
             </div>
 
             <div style={{display: 'flex', gap: '15px', marginTop: '25px'}}>
@@ -302,9 +268,9 @@ export default function UserManagementPage() {
                 type="submit"
                 className="btn-primary"
                 style={{flex: 1}}
-                disabled={createUserMutation.isPending || updateUserMutation.isPending}
+                disabled={createStudyProgramMutation.isPending || updateStudyProgramMutation.isPending}
               >
-                {createUserMutation.isPending || updateUserMutation.isPending ? 'Saving...' : 'Save User'}
+                {createStudyProgramMutation.isPending || updateStudyProgramMutation.isPending ? 'Saving...' : 'Save Study Program'}
               </button>
               <button
                 type="button"
