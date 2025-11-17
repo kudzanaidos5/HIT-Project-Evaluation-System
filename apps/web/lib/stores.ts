@@ -1,5 +1,18 @@
 import { create } from 'zustand'
-import { authAPI } from './api'
+import { authAPI, getTokens, clearTokens } from './api'
+
+export type NotificationType = 'success' | 'error' | 'info' | 'warning'
+
+export interface NotificationItem {
+  id: string
+  title: string
+  message: string
+  type: NotificationType
+  timestamp: Date
+  read: boolean
+  actionLabel?: string
+  actionUrl?: string
+}
 
 export interface User {
   id: number
@@ -28,18 +41,20 @@ export interface UIState {
   settingsMenuOpen: boolean
   evaluationModalOpen: boolean
   selectedProject: any | null
-  notifications: Array<{
-    id: string
-    message: string
-    type: 'success' | 'error' | 'info'
-    timestamp: Date
-  }>
+  notifications: NotificationItem[]
   toggleSidebar: () => void
   toggleProjectsMenu: () => void
   toggleSettingsMenu: () => void
   openEvaluationModal: (project: any) => void
   closeEvaluationModal: () => void
-  addNotification: (message: string, type: 'success' | 'error' | 'info') => void
+  setNotifications: (notifications: NotificationItem[]) => void
+  addNotification: (
+    message: string,
+    type: NotificationType,
+    options?: { title?: string; actionLabel?: string; actionUrl?: string }
+  ) => void
+  markNotificationRead: (id: string) => void
+  markAllNotificationsRead: () => void
   removeNotification: (id: string) => void
 }
 
@@ -112,34 +127,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   checkAuth: async () => {
-    // Only run on client side
     if (typeof window === 'undefined') return
-    
+
+    set({ isLoading: true })
     try {
-      const storedUser = localStorage.getItem('user')
-      const storedAccessToken = localStorage.getItem('accessToken')
-      
-      if (storedUser && storedAccessToken) {
-        const user = JSON.parse(storedUser)
-        set({ user, isAuthenticated: true })
-        
-        // TEMPORARILY DISABLED: Token validation
-        // Skip API validation to allow bypass
-        /*
-        try {
-          await authAPI.getCurrentUser()
-        } catch (error) {
-          console.error('Token validation failed:', error)
-          set({ user: null, isAuthenticated: false })
-          localStorage.removeItem('user')
-          localStorage.removeItem('accessToken')
-          localStorage.removeItem('refreshToken')
-        }
-        */
+      const { accessToken } = getTokens()
+
+      if (!accessToken) {
+        clearTokens()
+        set({ user: null, isAuthenticated: false, isLoading: false })
+        return
       }
+
+      const user = await authAPI.getCurrentUser()
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('user', JSON.stringify(user))
+      }
+      set({ user, isAuthenticated: true, isLoading: false })
     } catch (error) {
       console.error('Auth check failed:', error)
-      set({ user: null, isAuthenticated: false })
+      clearTokens()
+      set({ user: null, isAuthenticated: false, isLoading: false })
     }
   },
 }))
@@ -179,12 +187,24 @@ export const useUIStore = create<UIState>((set, get) => ({
     })
   },
 
-  addNotification: (message: string, type: 'success' | 'error' | 'info') => {
-    const notification = {
+  setNotifications: (notifications: NotificationItem[]) => {
+    set({ notifications })
+  },
+
+  addNotification: (
+    message: string,
+    type: NotificationType,
+    options?: { title?: string; actionLabel?: string; actionUrl?: string }
+  ) => {
+    const notification: NotificationItem = {
       id: Date.now().toString(),
+      title: options?.title || 'System Update',
       message,
       type,
       timestamp: new Date(),
+      read: false,
+      actionLabel: options?.actionLabel,
+      actionUrl: options?.actionUrl,
     }
     set((state) => ({
       notifications: [...state.notifications, notification],
@@ -199,6 +219,23 @@ export const useUIStore = create<UIState>((set, get) => ({
   removeNotification: (id: string) => {
     set((state) => ({
       notifications: state.notifications.filter((n) => n.id !== id),
+    }))
+  },
+
+  markNotificationRead: (id: string) => {
+    set((state) => ({
+      notifications: state.notifications.map((notification) =>
+        notification.id === id ? { ...notification, read: true } : notification
+      ),
+    }))
+  },
+
+  markAllNotificationsRead: () => {
+    set((state) => ({
+      notifications: state.notifications.map((notification) => ({
+        ...notification,
+        read: true,
+      })),
     }))
   },
 }))

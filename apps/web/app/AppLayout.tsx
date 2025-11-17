@@ -1,9 +1,10 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { useAuthStore, useUIStore, useThemeStore } from '../lib/stores'
+import NotificationsDropdown from '../components/NotificationsDropdown'
+import { useAuthStore, useUIStore, useThemeStore, NotificationItem } from '../lib/stores'
 
 // Live Date and Time Component
 const LiveDateTime = () => {
@@ -71,6 +72,77 @@ const LiveDateTime = () => {
   )
 }
 
+const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[] => {
+  const now = Date.now()
+  if (role === 'ADMIN') {
+    return [
+      {
+        id: 'admin-1',
+        title: 'New project submitted',
+        message: 'E-Commerce Platform (Level 4) is ready for evaluation.',
+        type: 'info',
+        timestamp: new Date(now - 15 * 60 * 1000),
+        read: false,
+        actionLabel: 'Open queue',
+        actionUrl: '/projects/pending',
+      },
+      {
+        id: 'admin-2',
+        title: 'Evaluation deadline approaching',
+        message: '3 projects will reach their SLA in the next 24 hours.',
+        type: 'warning',
+        timestamp: new Date(now - 2 * 60 * 60 * 1000),
+        read: false,
+        actionLabel: 'Review timeline',
+        actionUrl: '/deadlines',
+      },
+      {
+        id: 'admin-3',
+        title: 'Analytics update ready',
+        message: 'New performance insights are available for January.',
+        type: 'success',
+        timestamp: new Date(now - 26 * 60 * 60 * 1000),
+        read: true,
+        actionLabel: 'View analytics',
+        actionUrl: '/analytics',
+      },
+    ]
+  }
+
+  return [
+    {
+      id: 'student-1',
+      title: 'Evaluation released',
+      message: 'Your Capstone E-Commerce Platform scored 87%.',
+      type: 'success',
+      timestamp: new Date(now - 30 * 60 * 1000),
+      read: false,
+      actionLabel: 'View feedback',
+      actionUrl: '/dashboard',
+    },
+    {
+      id: 'student-2',
+      title: 'Submission reminder',
+      message: 'UI/UX documentation is due in 2 days. Upload now to stay on track.',
+      type: 'warning',
+      timestamp: new Date(now - 3 * 60 * 60 * 1000),
+      read: false,
+      actionLabel: 'Update submission',
+      actionUrl: '/projects',
+    },
+    {
+      id: 'student-3',
+      title: 'Message from evaluator',
+      message: 'Please confirm the final demo link before Friday.',
+      type: 'info',
+      timestamp: new Date(now - 3 * 24 * 60 * 60 * 1000),
+      read: true,
+      actionLabel: 'Go to dashboard',
+      actionUrl: '/dashboard',
+    },
+  ]
+}
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
@@ -82,10 +154,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     toggleSidebar,
     toggleProjectsMenu,
     toggleSettingsMenu,
+    notifications,
+    setNotifications,
+    markNotificationRead,
+    markAllNotificationsRead,
   } = useUIStore()
   const { isDarkMode, toggleDarkMode } = useThemeStore()
+  const isAdmin = user?.role === 'ADMIN'
 
   const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const notificationsRef = useRef<HTMLDivElement | null>(null)
 
   // Wrapper functions to auto-expand sidebar when clicking Projects or Settings
   const handleProjectsToggle = () => {
@@ -103,25 +182,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    // Only run auth check on client side
     if (typeof window !== 'undefined') {
       checkAuth()
-      
-      // TEMPORARILY: Auto-login with default admin user if not authenticated
-      if (!isAuthenticated) {
-        const defaultUser = {
-          id: 1,
-          name: 'System Administrator',
-          email: 'admin@hit.ac.zw',
-          role: 'ADMIN' as const,
-          created_at: new Date().toISOString()
-        }
-        localStorage.setItem('user', JSON.stringify(defaultUser))
-        localStorage.setItem('accessToken', 'temp-token-bypass')
-        checkAuth()
-      }
     }
-  }, [checkAuth, isAuthenticated])
+  }, [checkAuth])
+
+  useEffect(() => {
+    if (!isAuthenticated && pathname !== '/login') {
+      router.push('/login')
+    }
+  }, [isAuthenticated, pathname, router])
 
   // Close user menu when clicking outside
   useEffect(() => {
@@ -137,27 +207,47 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }, [userMenuOpen])
 
-  // TEMPORARILY DISABLED: Authentication bypass
-  // useEffect(() => {
-  //   if (!isAuthenticated && pathname !== '/login') {
-  //     router.push('/login')
-  //   }
-  // }, [isAuthenticated, pathname, router])
+  useEffect(() => {
+    if (!user) return
+    if (notifications.length > 0) return
+    setNotifications(buildDefaultNotifications(user.role))
+  }, [notifications.length, setNotifications, user])
+
+  useEffect(() => {
+    if (!notificationsOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (notificationsRef.current && !notificationsRef.current.contains(event.target as Node)) {
+        setNotificationsOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [notificationsOpen])
 
   const handleLogout = async () => {
     await logout()
     router.push('/login')
   }
 
-  // TEMPORARILY DISABLED: Authentication check
-  // if (!isAuthenticated && pathname !== '/login') {
-  //   return null // Will redirect to login
-  // }
+  const handleNotificationSelect = (notification: NotificationItem) => {
+    markNotificationRead(notification.id)
+    setNotificationsOpen(false)
+    if (notification.actionUrl) {
+      router.push(notification.actionUrl)
+    }
+  }
+
+  const unreadNotificationCount = notifications.filter((notification) => !notification.read).length
 
   // Allow direct access to pages without login
   if (pathname === '/login') {
     // Auto-redirect to dashboard
     return <>{children}</>
+  }
+
+  if (!isAuthenticated) {
+    return null
   }
 
   return (
@@ -169,15 +259,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {/* Left side - Hamburger, Logo and Title */}
             <div className="flex items-center space-x-4">
               {/* Modern hamburger button */}
-              <button 
-                onClick={toggleSidebar}
-                className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500 transition-colors"
-              >
-                <span className="sr-only">Open sidebar</span>
-                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              </button>
+              {isAdmin && (
+                <button 
+                  onClick={toggleSidebar}
+                  className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500 transition-colors"
+                >
+                  <span className="sr-only">Open sidebar</span>
+                  <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                </button>
+              )}
               
               {/* HIT Logo */}
               <div className="h-8 w-8 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center shadow-md">
@@ -214,12 +306,37 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </button>
 
               {/* Notification Bell with modern design */}
-              <button className="relative p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all">
+              <div className="relative" ref={notificationsRef}>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setNotificationsOpen((prev) => !prev)
+                  }}
+                  className="relative p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                  aria-label="Notifications"
+                  aria-expanded={notificationsOpen}
+                >
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
                   </svg>
-                  <span className="absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-500 ring-2 ring-white"></span>
+                  {unreadNotificationCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-h-[1.25rem] px-1.5 rounded-full bg-red-500 text-white text-[10px] font-semibold flex items-center justify-center ring-2 ring-white dark:ring-gray-900">
+                      {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+                    </span>
+                  )}
                 </button>
+                {notificationsOpen && (
+                  <NotificationsDropdown
+                    notifications={notifications}
+                    onSelect={handleNotificationSelect}
+                    onMarkAllRead={() => {
+                      markAllNotificationsRead()
+                      setNotificationsOpen(false)
+                    }}
+                  />
+                )}
+              </div>
                 
                 {/* User profile with dropdown menu */}
               <div className="relative">
@@ -271,9 +388,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
       <div className="flex">
         {/* Modern Sidebar */}
-        <div className={`${sidebarExpanded ? 'w-64' : 'w-16'} bg-gradient-to-b from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 shadow-xl transition-all duration-300 ease-in-out border-r border-gray-100 dark:border-gray-700`}>
-          <div className="h-screen flex flex-col pt-9">
-            <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto">
+        {isAdmin && (
+          <div className={`${sidebarExpanded ? 'w-64' : 'w-16'} bg-gradient-to-b from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 shadow-xl transition-all duration-300 ease-in-out border-r border-gray-100 dark:border-gray-700`}>
+            <div className="h-screen flex flex-col pt-9">
+              <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto">
               {/* 1. Dashboard */}
               <Link 
                 href="/dashboard" 
@@ -445,11 +563,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     </Link>
                   </div>
                 )}
-              </div>
-                </nav>
-                
+                </div>
+              </nav>
+                  
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Main Content */}
         <div className="flex-1">

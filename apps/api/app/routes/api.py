@@ -59,7 +59,7 @@ def require_admin_role():
 
 # Study Programs Routes
 @api_bp.route('/study-programs', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
 def get_courses():
     courses = StudyProgram.query.all()
     return jsonify([{
@@ -156,7 +156,7 @@ def delete_course(course_id):
 
 # Evaluation Templates Route (must be before other evaluation routes)
 @api_bp.route('/evaluation-templates', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
 def get_evaluation_templates():
     """Get available evaluation templates with their criteria"""
     templates = {
@@ -186,7 +186,7 @@ def get_evaluation_templates():
 
 # Projects Routes
 @api_bp.route('/projects', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
 def get_projects():
     try:
         # Get query parameters for filtering and search
@@ -529,8 +529,8 @@ def update_evaluation(evaluation_id):
 
 # User Management Routes (Admin Only)
 @api_bp.route('/users', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
-# @require_admin_role()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
+@require_admin_role()
 def get_users():
     try:
         users = User.query.all()
@@ -539,8 +539,8 @@ def get_users():
         return jsonify({"error": "Failed to fetch users"}), 500
 
 @api_bp.route('/users', methods=['POST'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
-# @require_admin_role()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
+@require_admin_role()
 def create_user():
     try:
         data = user_schema.load(request.json)
@@ -629,8 +629,8 @@ def delete_user(user_id):
         db.session.rollback()
         return jsonify({"error": "Failed to delete user"}), 500
 @api_bp.route('/analytics/averages', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
-# @require_admin_role()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
+@require_admin_role()
 def get_average_scores():
     # Get level from query parameter
     level_param = request.args.get('level')
@@ -658,8 +658,8 @@ def get_average_scores():
     }), 200
 
 @api_bp.route('/analytics/completion-rate', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
-# @require_admin_role()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
+@require_admin_role()
 def get_completion_rate():
     # Get level from query parameter
     level_param = request.args.get('level')
@@ -684,8 +684,8 @@ def get_completion_rate():
     }), 200
 
 @api_bp.route('/analytics/performance-by-study-program', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
-# @require_admin_role()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
+@require_admin_role()
 def get_performance_by_course():
     # Get level from query parameter
     level_param = request.args.get('level')
@@ -712,8 +712,8 @@ def get_performance_by_course():
     } for result in results]), 200
 
 @api_bp.route('/analytics/pipeline', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
-# @require_admin_role()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
+@require_admin_role()
 def get_pipeline_data():
     # Get level from query parameter
     level_param = request.args.get('level')
@@ -736,8 +736,8 @@ def get_pipeline_data():
     } for status, count in pipeline_data]), 200
 
 @api_bp.route('/analytics/top-projects', methods=['GET'])
-# @jwt_required()  # TEMPORARILY DISABLED FOR TESTING
-# @require_admin_role()  # TEMPORARILY DISABLED FOR TESTING
+@jwt_required()
+@require_admin_role()
 def get_top_projects():
     # Get level from query parameter
     level_param = request.args.get('level')

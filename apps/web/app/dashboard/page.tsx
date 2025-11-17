@@ -1,16 +1,14 @@
 'use client'
 
-import React, { useState } from 'react'
+import React from 'react'
 import { useRouter } from 'next/navigation'
-import { useAuthStore, useThemeStore } from '../../lib/stores'
+import { useAuthStore } from '../../lib/stores'
 import { useDashboardData, useProjects } from '../../lib/hooks'
 import StudentDashboard from '../../components/StudentDashboard'
 
 export default function DashboardPage() {
   const router = useRouter()
   const { user } = useAuthStore()
-  const { isDarkMode } = useThemeStore()
-  const [viewMode, setViewMode] = useState<'admin' | 'student'>('admin')
   
   // Get projects data
   const { projects: allProjects, averages, completionRate, isLoading: dashboardLoading, error } = useDashboardData()
@@ -28,42 +26,9 @@ export default function DashboardPage() {
   
   const isLoading = dashboardLoading || projectsLoading
 
-  // Show Student Dashboard for students or if viewMode is student
-  if (!isAdmin || viewMode !== 'admin') {
-    return (
-      <>
-        {/* Dashboard Switcher Button - Only show for admins */}
-        {isAdmin && (
-          <div className="fixed top-20 right-6 z-50">
-            <div className="bg-white dark:bg-gray-800 shadow-lg rounded-lg border border-gray-200 dark:border-gray-700 p-2">
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setViewMode('admin')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                    viewMode === 'admin'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                  }`}
-                >
-                  Admin View
-                </button>
-                <button
-                  onClick={() => setViewMode('student')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                    viewMode === 'student'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                  }`}
-                >
-                  Student View
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        <StudentDashboard />
-      </>
-    )
+  // Show Student Dashboard for students
+  if (!isAdmin) {
+    return <StudentDashboard />
   }
 
   if (error) {
@@ -90,36 +55,6 @@ export default function DashboardPage() {
 
   return (
     <>
-      {/* Dashboard Switcher Button - Only show for admins */}
-      {isAdmin && (
-        <div className="fixed top-20 right-6 z-50">
-          <div className="bg-white dark:bg-gray-800 shadow-lg rounded-lg border border-gray-200 dark:border-gray-700 p-2">
-            <div className="flex gap-2">
-              <button
-                onClick={() => setViewMode('admin')}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                  viewMode === 'admin'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                }`}
-              >
-                Admin View
-              </button>
-              <button
-                onClick={() => setViewMode('student')}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                  viewMode !== 'admin'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                }`}
-              >
-                Student View
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
       <div className="p-6">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">
