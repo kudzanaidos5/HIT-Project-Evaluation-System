@@ -127,15 +127,19 @@ class Project(db.Model):
     evaluations = db.relationship('Evaluation', backref='project', lazy='dynamic', cascade='all, delete-orphan')
     
     def to_dict(self):
+        study_program = self.study_program
+        student = self.student
+        student_user = getattr(student, 'user', None)
+
         return {
             'id': self.id,
             'title': self.title,
             'description': self.description,
             'level': self.level.value,
             'study_program_id': self.study_program_id,
-            'study_program_name': self.study_program.name if self.study_program else None,
+            'study_program_name': study_program.name if study_program else None,
             'student_id': self.student_id,
-            'student_name': self.student.user.name if self.student else None,
+            'student_name': student_user.name if student_user else None,
             'status': self.status,
             'github_link': self.github_link,
             'pdf_path': self.pdf_path,
