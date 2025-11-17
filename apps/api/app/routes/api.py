@@ -1,11 +1,16 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.extensions import db
 from app.models.models import User, StudyProgram, Project, Evaluation, EvaluationMark, UserRole, ProjectLevel, Deadline, EvaluationType
 from marshmallow import Schema, fields, ValidationError
 from sqlalchemy import func, desc
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, time
+import csv
+from io import StringIO, BytesIO
+from reportlab.lib.pagesizes import LETTER
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import simpleSplit
 
 api_bp = Blueprint('api', __name__)
 class UserSchema(Schema):
@@ -56,6 +61,366 @@ def require_admin_role():
             return f(*args, **kwargs)
         return decorated_function
     return decorator
+
+
+def _parse_date_param(value):
+    if not value:
+        return None
+    try:
+        if len(value) == 10:
+            return datetime.strptime(value, '%Y-%m-%d')
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError as exc:
+        raise ValueError("Invalid date format. Use YYYY-MM-DD or ISO 8601.") from exc
+
+
+def _normalize_end_of_day(date_value):
+    if not date_value:
+        return None
+    if date_value.time() == time(0, 0):
+        return datetime.combine(date_value.date(), time(23, 59, 59))
+    return date_value
+
+
+def _build_report_summary(level_param=None, start_date_str=None, end_date_str=None):
+    level = None
+    if level_param:
+        try:
+            level = ProjectLevel(int(level_param))
+        except ValueError as exc:
+            raise ValueError("Invalid level parameter. Accepted values: 200 or 400.") from exc
+
+    start_date = _parse_date_param(start_date_str) if start_date_str else None
+    end_date = _parse_date_param(end_date_str) if end_date_str else None
+    if end_date:
+        end_date = _normalize_end_of_day(end_date)
+
+    if start_date and end_date and end_date < start_date:
+        raise ValueError("end_date must be greater than or equal to start_date.")
+
+    project_query = Project.query
+    if level:
+        project_query = project_query.filter(Project.level == level)
+    if start_date:
+        project_query = project_query.filter(Project.created_at >= start_date)
+    if end_date:
+        project_query = project_query.filter(Project.created_at <= end_date)
+
+    total_projects = project_query.count()
+    evaluated_projects = project_query.join(Evaluation).distinct(Project.id).count()
+    pending_projects = project_query.filter(Project.status == 'pending').count()
+    completed_projects = project_query.filter(Project.status == 'evaluated').count()
+    status_rows = project_query.with_entities(Project.status, func.count(Project.id)).group_by(Project.status).all()
+    status_breakdown = {status: count for status, count in status_rows}
+
+    evaluation_query = Evaluation.query.join(Project)
+    if level:
+        evaluation_query = evaluation_query.filter(Project.level == level)
+    if start_date:
+        evaluation_query = evaluation_query.filter(Evaluation.created_at >= start_date)
+    if end_date:
+        evaluation_query = evaluation_query.filter(Evaluation.created_at <= end_date)
+
+    evaluation_count = evaluation_query.count()
+    average_score = evaluation_query.with_entities(func.avg(Evaluation.total_score)).scalar() or 0
+
+    grade_rows = evaluation_query.with_entities(Evaluation.grade, func.count(Evaluation.id))\
+        .filter(Evaluation.grade.isnot(None))\
+        .group_by(Evaluation.grade).all()
+    grade_distribution = [
+        {
+            "grade": grade,
+            "count": count
+        } for grade, count in grade_rows
+    ]
+
+    study_program_query = db.session.query(
+        StudyProgram.name.label('study_program_name'),
+        func.count(Project.id).label('project_count'),
+        func.avg(Evaluation.total_score).label('average_score')
+    ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id)
+
+    if level:
+        study_program_query = study_program_query.filter(Project.level == level)
+    if start_date:
+        study_program_query = study_program_query.filter(Project.created_at >= start_date)
+    if end_date:
+        study_program_query = study_program_query.filter(Project.created_at <= end_date)
+
+    study_program_rows = study_program_query.group_by(StudyProgram.id).all()
+    study_programs = [{
+        "study_program_name": row.study_program_name,
+        "project_count": row.project_count,
+        "average_score": round(row.average_score, 2) if row.average_score is not None else None
+    } for row in study_program_rows]
+
+    top_projects_query = db.session.query(
+        Project.title,
+        Project.level,
+        func.avg(Evaluation.total_score).label('avg_score')
+    ).join(Evaluation)
+
+    if level:
+        top_projects_query = top_projects_query.filter(Project.level == level)
+    if start_date:
+        top_projects_query = top_projects_query.filter(Evaluation.created_at >= start_date)
+    if end_date:
+        top_projects_query = top_projects_query.filter(Evaluation.created_at <= end_date)
+
+    top_projects_rows = top_projects_query.group_by(Project.id).order_by(desc('avg_score')).limit(10).all()
+    top_projects = [{
+        "title": row.title,
+        "level": row.level.value if isinstance(row.level, ProjectLevel) else row.level,
+        "average_score": round(row.avg_score, 2) if row.avg_score is not None else None
+    } for row in top_projects_rows]
+
+    recent_activity_rows = evaluation_query.with_entities(
+        Evaluation.id,
+        Project.title,
+        Evaluation.total_score,
+        Evaluation.created_at,
+        User.name
+    ).join(User, Evaluation.admin_id == User.id).order_by(Evaluation.created_at.desc()).limit(6).all()
+
+    recent_activity = [{
+        "id": row.id,
+        "project_title": row.title,
+        "score": row.total_score,
+        "evaluated_by": row.name,
+        "timestamp": row.created_at.isoformat()
+    } for row in recent_activity_rows]
+
+    completion_rate = round((evaluated_projects / total_projects * 100), 2) if total_projects else 0
+
+    return {
+        "meta": {
+            "generated_at": datetime.utcnow().isoformat(),
+            "filters": {
+                "level": level.value if level else None,
+                "start_date": start_date.isoformat() if start_date else None,
+                "end_date": end_date.isoformat() if end_date else None,
+            }
+        },
+        "project_overview": {
+            "total_projects": total_projects,
+            "evaluated_projects": evaluated_projects,
+            "pending_projects": pending_projects,
+            "completed_projects": completed_projects,
+            "completion_rate": completion_rate,
+            "status_breakdown": status_breakdown
+        },
+        "performance": {
+            "average_score": round(average_score, 2),
+            "evaluation_count": evaluation_count,
+            "grade_distribution": grade_distribution
+        },
+        "study_programs": study_programs,
+        "top_projects": top_projects,
+        "recent_activity": recent_activity
+    }
+
+
+def _report_summary_to_csv(summary):
+    output = StringIO()
+    writer = csv.writer(output)
+
+    meta = summary.get("meta", {})
+    writer.writerow(["Evaluation Report"])
+    writer.writerow(["Generated At", meta.get("generated_at")])
+    writer.writerow(["Level", meta.get("filters", {}).get("level") or "All"])
+    writer.writerow(["Start Date", meta.get("filters", {}).get("start_date") or "Not specified"])
+    writer.writerow(["End Date", meta.get("filters", {}).get("end_date") or "Not specified"])
+    writer.writerow([])
+
+    overview = summary.get("project_overview", {})
+    writer.writerow(["Project Overview"])
+    writer.writerow(["Total Projects", overview.get("total_projects", 0)])
+    writer.writerow(["Evaluated Projects", overview.get("evaluated_projects", 0)])
+    writer.writerow(["Pending Projects", overview.get("pending_projects", 0)])
+    writer.writerow(["Completed Projects", overview.get("completed_projects", 0)])
+    writer.writerow(["Completion Rate (%)", overview.get("completion_rate", 0)])
+    writer.writerow([])
+
+    performance = summary.get("performance", {})
+    writer.writerow(["Performance"])
+    writer.writerow(["Average Score", performance.get("average_score", 0)])
+    writer.writerow(["Evaluation Count", performance.get("evaluation_count", 0)])
+    writer.writerow([])
+    writer.writerow(["Grade Distribution"])
+    writer.writerow(["Grade", "Count"])
+    for grade_row in performance.get("grade_distribution", []):
+        writer.writerow([grade_row.get("grade"), grade_row.get("count")])
+    writer.writerow([])
+
+    writer.writerow(["Study Program Breakdown"])
+    writer.writerow(["Study Program", "Projects", "Average Score"])
+    for program in summary.get("study_programs", []):
+        writer.writerow([
+            program.get("study_program_name"),
+            program.get("project_count"),
+            program.get("average_score") if program.get("average_score") is not None else ""
+        ])
+    writer.writerow([])
+
+    writer.writerow(["Top Projects"])
+    writer.writerow(["Title", "Level", "Average Score"])
+    for project in summary.get("top_projects", []):
+        writer.writerow([
+            project.get("title"),
+            project.get("level"),
+            project.get("average_score")
+        ])
+    writer.writerow([])
+
+    writer.writerow(["Recent Activity"])
+    writer.writerow(["Project", "Score", "Evaluator", "Timestamp"])
+    for activity in summary.get("recent_activity", []):
+        writer.writerow([
+            activity.get("project_title"),
+            activity.get("score"),
+            activity.get("evaluated_by"),
+            activity.get("timestamp")
+        ])
+
+    return output.getvalue()
+
+
+def _report_summary_to_pdf(summary):
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=LETTER)
+    width, height = LETTER
+    margin = 40
+    line_height = 14
+    y = height - margin
+
+    def ensure_space():
+        nonlocal y
+        if y <= margin:
+            pdf.showPage()
+            pdf.setFont("Helvetica", 10)
+            y = height - margin
+
+    def draw_heading(text, size=14):
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", size)
+        pdf.drawString(margin, y, text)
+        y -= line_height + 4
+        ensure_space()
+        pdf.setFont("Helvetica", 10)
+
+    def draw_label_value(label, value):
+        nonlocal y
+        ensure_space()
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(margin, y, f"{label}:")
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(margin + 120, y, str(value))
+        y -= line_height
+
+    def draw_list(items, label_fields):
+        nonlocal y
+        for item in items:
+            ensure_space()
+            line = " • " + " | ".join(f"{label}: {item.get(field, '')}" for label, field in label_fields)
+            lines = simpleSplit(line, "Helvetica", 10, width - (margin * 2))
+            for part in lines:
+                pdf.drawString(margin, y, part)
+                y -= line_height
+                ensure_space()
+
+    draw_heading("Evaluation Summary Report")
+
+    meta = summary.get("meta", {})
+    filters = meta.get("filters", {})
+    draw_label_value("Generated At", meta.get("generated_at", ""))
+    draw_label_value("Level", filters.get("level") or "All")
+    draw_label_value("Start Date", filters.get("start_date") or "—")
+    draw_label_value("End Date", filters.get("end_date") or "—")
+    y -= line_height
+
+    draw_heading("Project Overview", 12)
+    overview = summary.get("project_overview", {})
+    draw_label_value("Total Projects", overview.get("total_projects", 0))
+    draw_label_value("Evaluated Projects", overview.get("evaluated_projects", 0))
+    draw_label_value("Pending Projects", overview.get("pending_projects", 0))
+    draw_label_value("Completed Projects", overview.get("completed_projects", 0))
+    draw_label_value("Completion Rate (%)", overview.get("completion_rate", 0))
+
+    if overview.get("status_breakdown"):
+        y -= line_height
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(margin, y, "Status Breakdown:")
+        y -= line_height
+        pdf.setFont("Helvetica", 10)
+        for status, count in overview["status_breakdown"].items():
+            ensure_space()
+            pdf.drawString(margin + 10, y, f"{status.title()}: {count}")
+            y -= line_height
+
+    y -= line_height
+    draw_heading("Performance", 12)
+    performance = summary.get("performance", {})
+    draw_label_value("Average Score", performance.get("average_score", 0))
+    draw_label_value("Evaluation Count", performance.get("evaluation_count", 0))
+
+    if performance.get("grade_distribution"):
+        y -= line_height
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(margin, y, "Grade Distribution:")
+        y -= line_height
+        pdf.setFont("Helvetica", 10)
+        for grade in performance["grade_distribution"]:
+            ensure_space()
+            pdf.drawString(margin + 10, y, f"{grade.get('grade')}: {grade.get('count')}")
+            y -= line_height
+
+    if summary.get("study_programs"):
+        y -= line_height
+        draw_heading("Study Program Performance", 12)
+        pdf.setFont("Helvetica", 10)
+        draw_list(
+            summary["study_programs"],
+            [
+                ("Program", "study_program_name"),
+                ("Projects", "project_count"),
+                ("Avg Score", "average_score"),
+            ],
+        )
+
+    if summary.get("top_projects"):
+        y -= line_height
+        draw_heading("Top Projects", 12)
+        pdf.setFont("Helvetica", 10)
+        draw_list(
+            summary["top_projects"],
+            [
+                ("Title", "title"),
+                ("Level", "level"),
+                ("Avg Score", "average_score"),
+            ],
+        )
+
+    if summary.get("recent_activity"):
+        y -= line_height
+        draw_heading("Recent Activity", 12)
+        pdf.setFont("Helvetica", 10)
+        for activity in summary["recent_activity"]:
+            ensure_space()
+            pdf.drawString(
+                margin,
+                y,
+                f"{activity.get('project_title')} • {activity.get('evaluated_by')} • {activity.get('score')}%",
+            )
+            y -= line_height
+            timestamp_text = activity.get('timestamp', '')
+            if timestamp_text:
+                pdf.drawString(margin + 10, y, timestamp_text)
+                y -= line_height
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # Study Programs Routes
 @api_bp.route('/study-programs', methods=['GET'])
@@ -760,6 +1125,56 @@ def get_top_projects():
         'level': project.level.value,
         'average_score': round(project.avg_score, 2)
     } for project in top_projects]), 200
+
+
+@api_bp.route('/reports/summary', methods=['GET'])
+@jwt_required()
+@require_admin_role()
+def get_report_summary():
+    level_param = request.args.get('level')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    try:
+        summary = _build_report_summary(level_param, start_date, end_date)
+        return jsonify(summary), 200
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        return jsonify({"error": "Failed to generate report summary"}), 500
+
+
+@api_bp.route('/reports/export', methods=['GET'])
+@jwt_required()
+@require_admin_role()
+def export_report():
+    level_param = request.args.get('level')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    export_format = (request.args.get('format') or 'csv').lower()
+    try:
+        summary = _build_report_summary(level_param, start_date, end_date)
+        if export_format == 'csv':
+            csv_payload = _report_summary_to_csv(summary)
+            response = make_response(csv_payload)
+            timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+            response.headers['Content-Disposition'] = f'attachment; filename=evaluation-report-{timestamp}.csv'
+            response.headers['Content-Type'] = 'text/csv'
+            return response
+        elif export_format == 'pdf':
+            pdf_payload = _report_summary_to_pdf(summary)
+            response = make_response(pdf_payload)
+            timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+            response.headers['Content-Disposition'] = f'attachment; filename=evaluation-report-{timestamp}.pdf'
+            response.headers['Content-Type'] = 'application/pdf'
+            return response
+        elif export_format == 'json':
+            return jsonify(summary), 200
+        else:
+            return jsonify({"error": "Unsupported export format. Use csv, pdf, or json."}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        return jsonify({"error": "Failed to export report"}), 500
 
 # Deadline Management Routes
 @api_bp.route('/deadlines', methods=['GET'])

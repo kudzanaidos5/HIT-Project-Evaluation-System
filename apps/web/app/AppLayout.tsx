@@ -519,7 +519,22 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 {sidebarExpanded && 'Analytics'}
               </Link>
 
-              {/* 6. Settings */}
+              {/* 6. Reports */}
+              <Link 
+                href="/reports" 
+                className={`group flex items-center ${sidebarExpanded ? 'px-3 py-2.5' : 'px-2 py-2 justify-center'} text-sm font-medium rounded-lg transition-all mt-2 ${
+                  pathname === '/reports' 
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md' 
+                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                <svg className={`${sidebarExpanded ? 'mr-3' : ''} h-6 w-6 ${pathname === '/reports' ? 'text-white' : 'text-gray-400 dark:text-gray-500 group-hover:text-gray-600 dark:group-hover:text-gray-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6M7 5h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2z" />
+                </svg>
+                {sidebarExpanded && 'Reports'}
+              </Link>
+
+              {/* 7. Settings */}
               <div className="space-y-1 mt-2">
                 <button
                   onClick={handleSettingsToggle}

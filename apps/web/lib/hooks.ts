@@ -5,7 +5,8 @@ import {
   evaluationsAPI, 
   usersAPI,
   studyProgramsAPI,
-  authAPI 
+  authAPI,
+  reportsAPI
 } from './api'
 
 // Query Keys
@@ -16,6 +17,7 @@ export const QUERY_KEYS = {
   USER: 'user',
   STUDY_PROGRAMS: 'study-programs',
   USERS: 'users',
+  REPORTS: 'reports',
 } as const
 
 // Projects Hooks
@@ -210,6 +212,15 @@ export const useAnalyticsTopProjects = (level?: number) => {
     queryKey: [QUERY_KEYS.ANALYTICS, 'top-projects', level],
     queryFn: () => analyticsAPI.getTopProjects(level),
     staleTime: 10 * 60 * 1000, // 10 minutes
+  })
+}
+
+// Reports Hooks
+export const useReportSummary = (params?: { level?: number; start_date?: string; end_date?: string }) => {
+  return useQuery({
+    queryKey: [QUERY_KEYS.REPORTS, params],
+    queryFn: () => reportsAPI.getSummary(params),
+    keepPreviousData: true,
   })
 }
 

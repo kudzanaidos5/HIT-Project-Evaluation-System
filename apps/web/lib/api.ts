@@ -331,4 +331,25 @@ export const analyticsAPI = {
   }
 }
 
+export const reportsAPI = {
+  getSummary: async (params?: { level?: number; start_date?: string; end_date?: string }) => {
+    const response = await apiClient.get('/reports/summary', { params })
+    return response.data
+  },
+  downloadCsv: async (params?: { level?: number; start_date?: string; end_date?: string }) => {
+    const response = await apiClient.get('/reports/export', {
+      params: { ...params, format: 'csv' },
+      responseType: 'blob',
+    })
+    return response.data
+  },
+  downloadPdf: async (params?: { level?: number; start_date?: string; end_date?: string }) => {
+    const response = await apiClient.get('/reports/export', {
+      params: { ...params, format: 'pdf' },
+      responseType: 'blob',
+    })
+    return response.data
+  },
+}
+
 export default apiClient
