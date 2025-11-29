@@ -3,6 +3,7 @@
 import React, { useMemo, useState } from 'react'
 import { useReportSummary } from '../../lib/hooks'
 import { reportsAPI } from '../../lib/api'
+import { useUIStore } from '../../lib/stores'
 
 type LevelOption = 'all' | '200' | '400'
 
@@ -28,6 +29,7 @@ const formatDateTime = (value?: string) => {
 }
 
 export default function ReportsPage() {
+  const { addNotification } = useUIStore()
   const [selectedLevel, setSelectedLevel] = useState<LevelOption>('all')
   const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' })
   const [exportingFormat, setExportingFormat] = useState<'csv' | 'pdf' | null>(null)
@@ -64,7 +66,7 @@ export default function ReportsPage() {
       window.URL.revokeObjectURL(url)
     } catch (error) {
       console.error('Failed to download report', error)
-      alert('Unable to download the report. Please try again.')
+      addNotification('Unable to download the report. Please try again.', 'error', { title: 'Download Error' })
     } finally {
       setExportingFormat(null)
     }
@@ -317,10 +319,19 @@ export default function ReportsPage() {
                   {(reportQuery.data.study_programs || []).length === 0 && (
                     <div className="p-5 text-sm text-gray-500 dark:text-gray-400">No study program data.</div>
                   )}
-                  {reportQuery.data.study_programs?.map((program) => (
-                    <div key={program.study_program_name} className="flex items-center justify-between p-5">
+                  {reportQuery.data.study_programs?.map((program, index) => (
+                    <div key={`${program.study_program_name}-${program.level}-${index}`} className="flex items-center justify-between p-5">
                       <div>
-                        <p className="font-semibold text-gray-900 dark:text-white">{program.study_program_name}</p>
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="font-semibold text-gray-900 dark:text-white">
+                            {program.study_program_name}
+                          </p>
+                          {program.level && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200">
+                              Level {program.level}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-sm text-gray-500 dark:text-gray-400">
                           {program.project_count} projects evaluated
                         </p>

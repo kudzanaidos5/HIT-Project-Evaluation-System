@@ -1,13 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { 
-  projectsAPI, 
-  analyticsAPI, 
-  evaluationsAPI, 
+import {
+  projectsAPI,
+  analyticsAPI,
+  evaluationsAPI,
   usersAPI,
   studyProgramsAPI,
   authAPI,
-  reportsAPI
+  reportsAPI,
+  studentsAPI
 } from './api'
+import { useAuthStore } from './stores'
 
 // Query Keys
 export const QUERY_KEYS = {
@@ -47,7 +49,7 @@ export const useProject = (id: number) => {
 
 export const useCreateProject = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: projectsAPI.create,
     onSuccess: () => {
@@ -58,9 +60,9 @@ export const useCreateProject = () => {
 
 export const useUpdateProject = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: any }) => 
+    mutationFn: ({ id, data }: { id: number; data: any }) =>
       projectsAPI.update(id, data),
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS] })
@@ -71,11 +73,42 @@ export const useUpdateProject = () => {
 
 export const useDeleteProject = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: projectsAPI.delete,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS] })
+    },
+  })
+}
+
+export const useApproveProject = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: projectsAPI.approve,
+    onSuccess: (_, projectId) => {
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS] })
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS, projectId] })
+      // Also invalidate student dashboard queries so students see the update immediately
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
+    },
+  })
+}
+
+export const useRejectProject = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      projectsAPI.reject(id, reason),
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS] })
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS, id] })
+      // Also invalidate student dashboard queries so students see the update immediately
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
     },
   })
 }
@@ -99,7 +132,7 @@ export const useStudyPrograms = () => {
 
 export const useCreateStudyProgram = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: studyProgramsAPI.create,
     onSuccess: () => {
@@ -110,7 +143,7 @@ export const useCreateStudyProgram = () => {
 
 export const useUpdateStudyProgram = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: ({ id, data }: { id: number; data: any }) =>
       studyProgramsAPI.update(id, data),
@@ -122,7 +155,7 @@ export const useUpdateStudyProgram = () => {
 
 export const useDeleteStudyProgram = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: studyProgramsAPI.delete,
     onSuccess: () => {
@@ -142,7 +175,7 @@ export const useUsers = () => {
 
 export const useCreateUser = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: usersAPI.create,
     onSuccess: () => {
@@ -153,7 +186,7 @@ export const useCreateUser = () => {
 
 export const useUpdateUser = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: ({ id, data }: { id: number; data: any }) =>
       usersAPI.update(id, data),
@@ -165,7 +198,7 @@ export const useUpdateUser = () => {
 
 export const useDeleteUser = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: usersAPI.delete,
     onSuccess: () => {
@@ -175,19 +208,21 @@ export const useDeleteUser = () => {
 }
 
 // Analytics Hooks
-export const useAnalyticsAverages = (level?: number) => {
+export const useAnalyticsAverages = (level?: number, options?: { enabled?: boolean }) => {
   return useQuery({
     queryKey: [QUERY_KEYS.ANALYTICS, 'averages', level],
     queryFn: () => analyticsAPI.getAverages(level),
     staleTime: 10 * 60 * 1000, // 10 minutes
+    enabled: options?.enabled !== false, // Default to true, but can be disabled
   })
 }
 
-export const useAnalyticsCompletionRate = (level?: number) => {
+export const useAnalyticsCompletionRate = (level?: number, options?: { enabled?: boolean }) => {
   return useQuery({
     queryKey: [QUERY_KEYS.ANALYTICS, 'completion-rate', level],
     queryFn: () => analyticsAPI.getCompletionRate(level),
     staleTime: 10 * 60 * 1000, // 10 minutes
+    enabled: options?.enabled !== false, // Default to true, but can be disabled
   })
 }
 
@@ -220,7 +255,7 @@ export const useReportSummary = (params?: { level?: number; start_date?: string;
   return useQuery({
     queryKey: [QUERY_KEYS.REPORTS, params],
     queryFn: () => reportsAPI.getSummary(params),
-    keepPreviousData: true,
+    placeholderData: (previousData) => previousData,
   })
 }
 
@@ -243,7 +278,7 @@ export const useEvaluation = (evaluationId: number) => {
 
 export const useCreateEvaluation = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: (evaluationData: any) =>
       evaluationsAPI.create(evaluationData),
@@ -257,7 +292,7 @@ export const useCreateEvaluation = () => {
 
 export const useUpdateEvaluation = () => {
   const queryClient = useQueryClient()
-  
+
   return useMutation({
     mutationFn: ({ evaluationId, data }: { evaluationId: number; data: any }) =>
       evaluationsAPI.update(evaluationId, data),
@@ -279,16 +314,20 @@ export const useCurrentUser = () => {
 
 // Custom hook for dashboard data
 export const useDashboardData = () => {
+  const { user } = useAuthStore()
   const projectsQuery = useProjects()
-  const averagesQuery = useAnalyticsAverages()
-  const completionRateQuery = useAnalyticsCompletionRate()
-  
+  const isAdmin = user?.role === 'ADMIN'
+
+  // Only fetch analytics data for admins
+  const averagesQuery = useAnalyticsAverages(undefined, { enabled: isAdmin })
+  const completionRateQuery = useAnalyticsCompletionRate(undefined, { enabled: isAdmin })
+
   return {
     projects: projectsQuery.data || [],
     averages: averagesQuery.data,
     completionRate: completionRateQuery.data,
-    isLoading: projectsQuery.isLoading || averagesQuery.isLoading || completionRateQuery.isLoading,
-    error: projectsQuery.error || averagesQuery.error || completionRateQuery.error,
+    isLoading: projectsQuery.isLoading || (isAdmin && (averagesQuery.isLoading || completionRateQuery.isLoading)),
+    error: projectsQuery.error || (isAdmin && (averagesQuery.error || completionRateQuery.error)),
   }
 }
 
@@ -299,16 +338,85 @@ export const useAnalyticsData = () => {
   const performanceQuery = useAnalyticsPerformanceByStudyProgram()
   const pipelineQuery = useAnalyticsPipeline()
   const topProjectsQuery = useAnalyticsTopProjects()
-  
+
   return {
     averages: averagesQuery.data,
     completionRate: completionRateQuery.data,
     performanceByStudyProgram: performanceQuery.data || [],
     pipeline: pipelineQuery.data || [],
     topProjects: topProjectsQuery.data || [],
-    isLoading: averagesQuery.isLoading || completionRateQuery.isLoading || 
-               performanceQuery.isLoading || pipelineQuery.isLoading || topProjectsQuery.isLoading,
-    error: averagesQuery.error || completionRateQuery.error || 
-           performanceQuery.error || pipelineQuery.error || topProjectsQuery.error,
+    isLoading: averagesQuery.isLoading || completionRateQuery.isLoading ||
+      performanceQuery.isLoading || pipelineQuery.isLoading || topProjectsQuery.isLoading,
+    error: averagesQuery.error || completionRateQuery.error ||
+      performanceQuery.error || pipelineQuery.error || topProjectsQuery.error,
   }
+}
+
+// Student Dashboard Hooks
+export const useStudentProjects = (params?: { status?: string; level?: string }) => {
+  return useQuery({
+    queryKey: ['students', 'me', 'projects', params],
+    queryFn: () => studentsAPI.getMyProjects(params),
+    staleTime: 2 * 60 * 1000, // 2 minutes
+  })
+}
+
+export const useStudentDashboard = () => {
+  return useQuery({
+    queryKey: ['students', 'me', 'dashboard'],
+    queryFn: () => studentsAPI.getMyDashboard(),
+    staleTime: 1 * 60 * 1000, // 1 minute
+  })
+}
+
+export const useStudentProject = (projectId: number | null) => {
+  return useQuery({
+    queryKey: ['students', 'me', 'projects', projectId],
+    queryFn: () => studentsAPI.getMyProject(projectId!),
+    enabled: !!projectId,
+  })
+}
+
+export const useStudentProjectTimeline = (projectId: number | null) => {
+  return useQuery({
+    queryKey: ['students', 'me', 'projects', projectId, 'timeline'],
+    queryFn: () => studentsAPI.getProjectTimeline(projectId!),
+    enabled: !!projectId,
+  })
+}
+
+export const useUpdateProjectSubmission = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ projectId, data }: { projectId: number; data: any }) =>
+      studentsAPI.updateProjectSubmission(projectId, data),
+    onSuccess: (_, { projectId }) => {
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects', projectId, 'timeline'] })
+    },
+  })
+}
+
+export const useCreateMyProject = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (data: { title: string; description?: string; study_program_id: number; level: 200 | 400 }) =>
+      studentsAPI.createMyProject(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
+    },
+  })
+}
+
+// Auth Hooks
+export const useChangePassword = () => {
+  return useMutation({
+    mutationFn: ({ currentPassword, newPassword }: { currentPassword: string; newPassword: string }) =>
+      authAPI.changePassword(currentPassword, newPassword),
+  })
 }

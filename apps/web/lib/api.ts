@@ -113,11 +113,11 @@ export const authAPI = {
     const response = await apiClient.post('/auth/login', { email, password })
     const { accessToken: newAccessToken, refreshToken: newRefreshToken, user } = response.data
     setTokens(newAccessToken, newRefreshToken)
-    
+
     if (typeof window !== 'undefined') {
       localStorage.setItem('user', JSON.stringify(user))
     }
-    
+
     return { user, accessToken: newAccessToken, refreshToken: newRefreshToken }
   },
 
@@ -131,6 +131,14 @@ export const authAPI = {
     }
 
     return { user, accessToken: newAccessToken, refreshToken: newRefreshToken }
+  },
+
+  changePassword: async (currentPassword: string, newPassword: string) => {
+    const response = await apiClient.post('/auth/change-password', {
+      currentPassword,
+      newPassword,
+    })
+    return response.data
   },
 
   logout: async () => {
@@ -170,7 +178,7 @@ export const projectsAPI = {
     if (params?.study_program_id) queryParams.append('study_program_id', params.study_program_id)
     if (params?.page) queryParams.append('page', params.page.toString())
     if (params?.per_page) queryParams.append('per_page', params.per_page.toString())
-    
+
     const response = await apiClient.get(`/projects?${queryParams.toString()}`)
     return response.data
   },
@@ -192,6 +200,16 @@ export const projectsAPI = {
 
   delete: async (id: number) => {
     const response = await apiClient.delete(`/projects/${id}`)
+    return response.data
+  },
+
+  approve: async (id: number) => {
+    const response = await apiClient.post(`/projects/${id}/approve`)
+    return response.data
+  },
+
+  reject: async (id: number, reason?: string) => {
+    const response = await apiClient.post(`/projects/${id}/reject`, reason ? { reason } : {})
     return response.data
   }
 }
@@ -324,9 +342,59 @@ export const analyticsAPI = {
     return response.data
   },
 
+  getMissedDeadlines: async () => {
+    const response = await apiClient.get('/deadlines/missed')
+    return response.data
+  },
+
   // Project Submission
   submitProject: async (projectId: number, data: { github_link: string }) => {
     const response = await apiClient.post(`/projects/${projectId}/submit`, data)
+    return response.data
+  }
+}
+
+export const studentsAPI = {
+  getMyProjects: async (params?: { status?: string; level?: string }) => {
+    const queryParams = new URLSearchParams()
+    if (params?.status) queryParams.append('status', params.status)
+    if (params?.level) queryParams.append('level', params.level)
+
+    const response = await apiClient.get(`/students/me/projects?${queryParams.toString()}`)
+    return response.data
+  },
+
+  getMyDashboard: async () => {
+    const response = await apiClient.get('/students/me/dashboard')
+    return response.data
+  },
+
+  getMyProject: async (projectId: number) => {
+    const response = await apiClient.get(`/students/me/projects/${projectId}`)
+    return response.data
+  },
+
+  updateProjectSubmission: async (projectId: number, data: {
+    github_link?: string
+    documentation_link?: string
+    pdf_path?: string
+  }) => {
+    const response = await apiClient.put(`/students/me/projects/${projectId}/submission`, data)
+    return response.data
+  },
+
+  getProjectTimeline: async (projectId: number) => {
+    const response = await apiClient.get(`/students/me/projects/${projectId}/timeline`)
+    return response.data
+  },
+
+  createMyProject: async (data: {
+    title: string
+    description?: string
+    study_program_id: number
+    level: 200 | 400
+  }) => {
+    const response = await apiClient.post('/students/me/project', data)
     return response.data
   }
 }

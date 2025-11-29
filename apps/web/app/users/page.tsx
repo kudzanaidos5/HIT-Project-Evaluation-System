@@ -1,20 +1,24 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser } from '../../lib/hooks'
-import { useAuthStore, useThemeStore } from '../../lib/stores'
+import { useAuthStore, useThemeStore, useUIStore } from '../../lib/stores'
+import ConfirmDialog from '../../components/ConfirmDialog'
 
 interface UserFormData {
   name: string
   email: string
   password: string
+  confirmPassword: string
+  registrationNumber?: string
   role: 'ADMIN' | 'STUDENT'
 }
 
 export default function UserManagementPage() {
   const { user: currentUser } = useAuthStore()
   const { isDarkMode } = useThemeStore()
+  const { addNotification } = useUIStore()
   const { data: users, isLoading, error } = useUsers()
   const createUserMutation = useCreateUser()
   const updateUserMutation = useUpdateUser()
@@ -23,14 +27,48 @@ export default function UserManagementPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<any>(null)
   const [modalTitle, setModalTitle] = useState('Add New User')
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [userToDelete, setUserToDelete] = useState<number | null>(null)
+  
+  // Filter state
+  const [searchTerm, setSearchTerm] = useState('')
+  const [roleFilter, setRoleFilter] = useState<'all' | 'ADMIN' | 'STUDENT'>('all')
+  const [sortBy, setSortBy] = useState<'name' | 'email' | 'role' | 'created_at'>('created_at')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
-  const { register, handleSubmit, formState: { errors }, reset, setValue } = useForm<UserFormData>()
+  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<UserFormData>()
+  const selectedRole = watch('role')
+  const emailValue = watch('email')
+  const registrationNumberValue = watch('registrationNumber')
+  
+  // Clear registration number when role changes to ADMIN
+  useEffect(() => {
+    if (selectedRole === 'ADMIN') {
+      setValue('registrationNumber', '')
+    }
+  }, [selectedRole, setValue])
+  
+  // Auto-populate registration number from email for students
+  useEffect(() => {
+    if (selectedRole === 'STUDENT' && emailValue && emailValue.includes('@')) {
+      const emailParts = emailValue.split('@')
+      if (emailParts.length > 0 && emailParts[0]) {
+        const emailPrefix = emailParts[0].trim().toUpperCase()
+        
+        // Always auto-fill registration number from email prefix for students
+        // This ensures the registration number stays in sync with the email
+        setValue('registrationNumber', emailPrefix, { shouldValidate: false })
+      }
+    }
+  }, [emailValue, selectedRole, setValue])
 
   const openCreateModal = () => {
     setEditingUser(null)
     setModalTitle('Add New User')
     setModalOpen(true)
-    reset()
+    reset({
+      role: 'STUDENT' // Default to STUDENT so registration field shows immediately
+    })
   }
 
   const openEditModal = (user: any) => {
@@ -40,6 +78,7 @@ export default function UserManagementPage() {
     setValue('name', user.name)
     setValue('email', user.email)
     setValue('role', user.role)
+    setValue('registrationNumber', user.student_profile?.student_id || '')
   }
 
   const closeModal = () => {
@@ -50,40 +89,89 @@ export default function UserManagementPage() {
 
   const onSubmit = async (data: UserFormData) => {
     try {
+      // Validate password confirmation for new users
+      if (!editingUser && data.password !== data.confirmPassword) {
+        addNotification('Passwords do not match', 'error', { title: 'Validation Error' })
+        return
+      }
+
       if (editingUser) {
+        const updateData: any = {
+          name: data.name,
+          email: data.email,
+          role: data.role,
+        }
+        if (data.password) {
+          updateData.password = data.password
+        }
+        // Registration number is required for students
+        if (data.role === 'STUDENT') {
+          if (!data.registrationNumber || !data.registrationNumber.trim()) {
+            addNotification('Registration number is required for students', 'error', { title: 'Validation Error' })
+            return
+          }
+          updateData.registration_number = data.registrationNumber.trim()
+        } else {
+          // For non-students, don't include registration_number
+          updateData.registration_number = null
+        }
+        
         await updateUserMutation.mutateAsync({
           id: editingUser.id,
-          data: {
-            name: data.name,
-            email: data.email,
-            role: data.role,
-            ...(data.password && { password: data.password })
-          }
+          data: updateData
         })
+        addNotification('User updated successfully!', 'success', { title: 'Success' })
       } else {
-        await createUserMutation.mutateAsync(data)
+        const { confirmPassword, registrationNumber, ...userData } = data
+        const createData: any = {
+          ...userData,
+        }
+        // Registration number is required for students
+        if (data.role === 'STUDENT') {
+          if (!registrationNumber || !registrationNumber.trim()) {
+            addNotification('Registration number is required for students', 'error', { title: 'Validation Error' })
+            return
+          }
+          createData.registration_number = registrationNumber.trim()
+        }
+        await createUserMutation.mutateAsync(createData)
+        addNotification('User created successfully!', 'success', { title: 'Success' })
       }
       
-      alert(editingUser ? 'User updated successfully!' : 'User created successfully!')
       closeModal()
     } catch (error: any) {
-      alert(`Error: ${error.message}`)
+      addNotification(`Error: ${error.message}`, 'error', { title: 'Error' })
     }
   }
 
-  const handleDelete = async (userId: number) => {
+  const handleDeleteClick = (userId: number) => {
     if (userId === currentUser?.id) {
-      alert('You cannot delete your own account')
+      addNotification('You cannot delete your own account', 'error', { title: 'Error' })
       return
     }
+    setUserToDelete(userId)
+    setDeleteDialogOpen(true)
+  }
 
-    if (confirm('Are you sure you want to delete this user?')) {
-      try {
-        await deleteUserMutation.mutateAsync(userId)
-        alert('User deleted successfully!')
-      } catch (error: any) {
-        alert(`Error: ${error.message}`)
-      }
+  const handleDeleteConfirm = async () => {
+    if (!userToDelete) return
+    
+    try {
+      await deleteUserMutation.mutateAsync(userToDelete)
+      addNotification('User deleted successfully!', 'success', { title: 'Success' })
+      setDeleteDialogOpen(false)
+      setUserToDelete(null)
+    } catch (error: any) {
+      const errorData = error?.response?.data || {}
+      const errorMessage = errorData.error || error?.message || 'Failed to delete user'
+      const errorDetails = errorData.details || errorMessage
+      
+      // Use the detailed message from backend if available, otherwise use the error message
+      const displayMessage = errorDetails || errorMessage
+      
+      addNotification(displayMessage, 'error', { title: 'Cannot Delete User' })
+      setDeleteDialogOpen(false)
+      setUserToDelete(null)
     }
   }
 
@@ -136,6 +224,53 @@ export default function UserManagementPage() {
         </button>
       </div>
 
+      {/* Filters and Search */}
+      <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label htmlFor="search" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Search
+            </label>
+            <input
+              type="text"
+              id="search"
+              placeholder="Search users, emails, or student IDs..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+          
+          <div>
+            <label htmlFor="role" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Role
+            </label>
+            <select
+              id="role"
+              value={roleFilter}
+              onChange={(e) => setRoleFilter(e.target.value as 'all' | 'ADMIN' | 'STUDENT')}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="all">All Roles</option>
+              <option value="ADMIN">Admin</option>
+              <option value="STUDENT">Student</option>
+            </select>
+          </div>
+          
+          <div className="flex items-end">
+            <button
+              onClick={() => {
+                setSearchTerm('')
+                setRoleFilter('all')
+              }}
+              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              Clear Filters
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">Users List</h3>
@@ -149,29 +284,71 @@ export default function UserManagementPage() {
             ))}
           </div>
         ) : users && users.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-              <thead className="bg-gray-50 dark:bg-gray-900">
-                <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Name
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Email
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Role
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Created
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {users.map((user: any) => (
+          (() => {
+            // Filter users based on search and role
+            const filteredUsers = users.filter((user: any) => {
+              const matchesSearch = !searchTerm || 
+                user.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                user.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                user.student_profile?.student_id?.toLowerCase().includes(searchTerm.toLowerCase())
+              
+              const matchesRole = roleFilter === 'all' || user.role === roleFilter
+              
+              return matchesSearch && matchesRole
+            }).sort((a: any, b: any) => {
+              let aValue: any
+              let bValue: any
+              
+              switch (sortBy) {
+                case 'name':
+                  aValue = a.name?.toLowerCase() || ''
+                  bValue = b.name?.toLowerCase() || ''
+                  break
+                case 'email':
+                  aValue = a.email?.toLowerCase() || ''
+                  bValue = b.email?.toLowerCase() || ''
+                  break
+                case 'role':
+                  aValue = a.role || ''
+                  bValue = b.role || ''
+                  break
+                case 'created_at':
+                  aValue = new Date(a.created_at || 0).getTime()
+                  bValue = new Date(b.created_at || 0).getTime()
+                  break
+                default:
+                  return 0
+              }
+              
+              if (aValue < bValue) return sortOrder === 'asc' ? -1 : 1
+              if (aValue > bValue) return sortOrder === 'asc' ? 1 : -1
+              return 0
+            })
+            
+            return filteredUsers.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                  <thead className="bg-gray-50 dark:bg-gray-900">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Name
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Email
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Role
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Created
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                    {filteredUsers.map((user: any) => (
                   <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">
                       {user.name}
@@ -201,19 +378,49 @@ export default function UserManagementPage() {
                       >
                         Edit
                       </button>
-                      <button
-                        onClick={() => handleDelete(user.id)}
-                        className="text-red-600 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300 transition-colors"
-                        disabled={user.id === currentUser?.id}
-                      >
-                        Delete
-                      </button>
+                      {(() => {
+                        const hasProjects = (user.project_count || 0) > 0
+                        const hasEvaluations = (user.evaluation_count || 0) > 0
+                        const cannotDelete = user.id === currentUser?.id || hasProjects || hasEvaluations
+                        const deleteReason = user.id === currentUser?.id 
+                          ? 'You cannot delete your own account'
+                          : hasProjects 
+                          ? `Cannot delete: User has ${user.project_count} associated project(s)`
+                          : hasEvaluations
+                          ? `Cannot delete: User has created ${user.evaluation_count} evaluation(s)`
+                          : ''
+                        
+                        return (
+                          <button
+                            onClick={() => handleDeleteClick(user.id)}
+                            className={`transition-colors ${
+                              cannotDelete
+                                ? 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                                : 'text-red-600 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300'
+                            }`}
+                            disabled={cannotDelete}
+                            title={deleteReason}
+                          >
+                            Delete
+                          </button>
+                        )
+                      })()}
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <svg className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-gray-100">No users found</h3>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Try adjusting your filters.</p>
+            </div>
+          )
+        })()
         ) : (
           <div className="text-center py-12">
             <svg className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -254,10 +461,17 @@ export default function UserManagementPage() {
                 {...register('email', { 
                   required: 'Email is required',
                   pattern: {
-                    value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
-                    message: 'Invalid email address'
+                    value: /^[A-Z0-9._%+-]+@hit\.ac\.zw$/i,
+                    message: 'Email must be a valid HIT email address (@hit.ac.zw)'
+                  },
+                  validate: (value) => {
+                    if (!value.toLowerCase().endsWith('@hit.ac.zw')) {
+                      return 'Email must end with @hit.ac.zw'
+                    }
+                    return true
                   }
                 })}
+                placeholder="username@hit.ac.zw"
               />
               {errors.email && (
                 <p className="text-red-500 text-sm mt-1">{errors.email.message}</p>
@@ -276,12 +490,33 @@ export default function UserManagementPage() {
                     message: 'Password must be at least 6 characters'
                   }
                 })}
-                placeholder={editingUser ? 'Leave blank to keep current password' : ''}
+                placeholder={editingUser ? 'Leave blank to keep current password' : 'Enter password'}
               />
               {errors.password && (
                 <p className="text-red-500 text-sm mt-1">{errors.password.message}</p>
               )}
             </div>
+
+            {!editingUser && (
+              <div className="form-group">
+                <label className="form-label">Confirm Password</label>
+                <input
+                  type="password"
+                  className="form-input"
+                  {...register('confirmPassword', { 
+                    required: 'Please confirm your password',
+                    validate: (value) => {
+                      const password = (document.querySelector('input[name="password"]') as HTMLInputElement)?.value
+                      return value === password || 'Passwords do not match'
+                    }
+                  })}
+                  placeholder="Confirm password"
+                />
+                {errors.confirmPassword && (
+                  <p className="text-red-500 text-sm mt-1">{errors.confirmPassword.message}</p>
+                )}
+              </div>
+            )}
 
             <div className="form-group">
               <label className="form-label">Role</label>
@@ -296,6 +531,33 @@ export default function UserManagementPage() {
                 <p className="text-red-500 text-sm mt-1">{errors.role.message}</p>
               )}
             </div>
+
+            {selectedRole === 'STUDENT' && (
+              <div className="form-group">
+                <label className="form-label">Student Registration Number <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  className="form-input"
+                  {...register('registrationNumber', {
+                    required: 'Registration number is required for students',
+                    pattern: {
+                      value: /^[A-Za-z]\d{6}[A-Za-z]$/,
+                      message: 'Registration number must match format: 1 letter + 6 digits + 1 letter (e.g., H230376W)'
+                    },
+                    validate: (value) => {
+                      if (selectedRole === 'STUDENT' && (!value || !value.trim())) {
+                        return 'Registration number is required for students'
+                      }
+                      return true
+                    }
+                  })}
+                  placeholder="e.g., H230376W"
+                />
+                {errors.registrationNumber && (
+                  <p className="text-red-500 text-sm mt-1">{errors.registrationNumber.message}</p>
+                )}
+              </div>
+            )}
 
             <div style={{display: 'flex', gap: '15px', marginTop: '25px'}}>
               <button
@@ -318,6 +580,22 @@ export default function UserManagementPage() {
           </form>
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={deleteDialogOpen}
+        onClose={() => {
+          setDeleteDialogOpen(false)
+          setUserToDelete(null)
+        }}
+        onConfirm={handleDeleteConfirm}
+        title="Delete User"
+        message="Are you sure you want to delete this user? This action cannot be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        confirmButtonStyle="danger"
+        isLoading={deleteUserMutation.isPending}
+      />
     </div>
   )
 }

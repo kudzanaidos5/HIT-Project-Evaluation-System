@@ -13,7 +13,23 @@ def create_app() -> Flask:
     migrate.init_app(app, db)
     jwt.init_app(app)
     bcrypt.init_app(app)
-    cors.init_app(app, resources={r"/api/*": {"origins": app.config.get("CORS_ORIGINS")}}, supports_credentials=True)
+    # Configure CORS to handle preflight requests properly
+    cors_origins = app.config.get("CORS_ORIGINS", "http://localhost:3000")
+    # Handle comma-separated origins
+    if isinstance(cors_origins, str) and ',' in cors_origins:
+        cors_origins = [origin.strip() for origin in cors_origins.split(',')]
+    
+    cors.init_app(
+        app, 
+        resources={r"/api/*": {
+            "origins": cors_origins,
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "expose_headers": ["Content-Type"],
+        }}, 
+        supports_credentials=True,
+        automatic_options=True
+    )
 
     # JWT configuration
     @jwt.user_identity_loader

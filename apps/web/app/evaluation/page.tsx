@@ -1,10 +1,11 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useProjects, useCreateEvaluation, useEvaluationTemplates } from '../../lib/hooks'
-import { useThemeStore } from '../../lib/stores'
+import { useThemeStore, useUIStore } from '../../lib/stores'
 import { useSearchParams } from 'next/navigation'
+import VerificationModal from '../../components/VerificationModal'
 
 interface EvaluationFormData {
   projectId: number
@@ -30,9 +31,10 @@ export default function EvaluationPage() {
   const searchParams = useSearchParams()
   const projectId = searchParams.get('projectId')
   const { isDarkMode } = useThemeStore()
+  const { addNotification } = useUIStore()
 
   const { data: projectsData, isLoading: projectsLoading } = useProjects()
-  const projects = projectsData?.projects || projectsData || []
+  const projects = useMemo(() => projectsData?.projects || projectsData || [], [projectsData])
   const { data: templates, isLoading: templatesLoading } = useEvaluationTemplates()
   const createEvaluationMutation = useCreateEvaluation()
 
@@ -51,47 +53,41 @@ export default function EvaluationPage() {
     projectId: '',
     comments: ''
   })
+  const [customFormError, setCustomFormError] = useState('')
   const [formMarks, setFormMarks] = useState<Array<{
     criterion_name: string
     max_score: number
     score: number
     comments?: string
   }>>([])
+  const [verificationConfig, setVerificationConfig] = useState<{
+    title: string
+    description: string
+    highlight?: string
+    confirmLabel?: string
+    tone?: 'info' | 'danger'
+  } | null>(null)
+  const [pendingAction, setPendingAction] = useState<
+    | { type: 'STANDARD'; payload: EvaluationFormData }
+    | {
+        type: 'CUSTOM'
+        payload: {
+          projectId: number
+          data: {
+            evaluation_type: 'PROJECT' | 'PRESENTATION'
+            comments: string
+            marks: Array<{ criterion_name: string; max_score: number; score: number; comments?: string }>
+          }
+        }
+      }
+    | null
+  >(null)
+  const [verificationLoading, setVerificationLoading] = useState(false)
+  const [projectSearchTerm, setProjectSearchTerm] = useState('')
 
   const { register, handleSubmit, formState: { errors }, setValue, watch, reset } = useForm<EvaluationFormData>()
 
-  // Pre-fill project if projectId is provided
-  useEffect(() => {
-    if (projectId && projects && projects.length > 0) {
-      const project = projects.find((p: any) => p.id === parseInt(projectId))
-      if (project) {
-        setSelectedProject(project)
-        setValue('projectId', project.id)
-        // Auto-select appropriate template based on project level
-        const templateKey = project.level === 200 ? 'level_200' : 'level_400'
-        openEvaluationForm(templateKey)
-      }
-    }
-  }, [projectId, projects, setValue])
-
-  const openLevelSelection = (level: 200 | 400) => {
-    setSelectedLevel(level)
-    setLevelSelectionModalOpen(true)
-  }
-
-  const selectEvaluationType = (type: 'PROJECT' | 'PRESENTATION') => {
-    if (!selectedLevel) return
-    
-    const templateKey = type === 'PROJECT' ? 'project' : 'presentation'
-    setLevelSelectionModalOpen(false)
-    
-    // Wait a bit for modal to close before opening the next one
-    setTimeout(() => {
-      openEvaluationForm(templateKey, type)
-    }, 300)
-  }
-
-  const openEvaluationForm = (templateKey: string, evalType?: 'PROJECT' | 'PRESENTATION') => {
+  const openEvaluationForm = useCallback((templateKey: string, evalType?: 'PROJECT' | 'PRESENTATION') => {
     setSelectedTemplate(templateKey)
     
     // Determine evaluation type
@@ -152,6 +148,36 @@ export default function EvaluationPage() {
     
     // Open modal after setting values
     setModalOpen(true)
+  }, [reset, selectedLevel, selectedProject, setValue, templates])
+
+  // Pre-fill project if projectId is provided
+  useEffect(() => {
+    if (projectId && projects && projects.length > 0) {
+      const project = projects.find((p: any) => p.id === parseInt(projectId))
+      if (project) {
+        setSelectedProject(project)
+        setValue('projectId', project.id)
+        const templateKey = project.level === 200 ? 'level_200' : 'level_400'
+        openEvaluationForm(templateKey)
+      }
+    }
+  }, [openEvaluationForm, projectId, projects, setValue])
+
+  const openLevelSelection = (level: 200 | 400) => {
+    setSelectedLevel(level)
+    setLevelSelectionModalOpen(true)
+  }
+
+  const selectEvaluationType = (type: 'PROJECT' | 'PRESENTATION') => {
+    if (!selectedLevel) return
+    
+    const templateKey = type === 'PROJECT' ? 'project' : 'presentation'
+    setLevelSelectionModalOpen(false)
+    
+    // Wait a bit for modal to close before opening the next one
+    setTimeout(() => {
+      openEvaluationForm(templateKey, type)
+    }, 300)
   }
 
   const closeEvaluationForm = () => {
@@ -161,6 +187,7 @@ export default function EvaluationPage() {
     setEvaluationType(null)
     setSelectedLevel(null)
     setFormMarks([])
+    setProjectSearchTerm('')
     reset()
   }
 
@@ -173,12 +200,14 @@ export default function EvaluationPage() {
     setCustomEvaluationModalOpen(true)
     setCustomCriteria([{ id: '1', criterion_name: '', max_score: 0, score: 0, comments: '' }])
     setCustomEvaluationData({ projectId: '', comments: '' })
+    setCustomFormError('')
   }
 
   const closeCustomEvaluation = () => {
     setCustomEvaluationModalOpen(false)
     setCustomCriteria([{ id: '1', criterion_name: '', max_score: 0, score: 0, comments: '' }])
     setCustomEvaluationData({ projectId: '', comments: '' })
+    setCustomFormError('')
   }
 
   const addCustomCriterion = () => {
@@ -200,62 +229,131 @@ export default function EvaluationPage() {
     ))
   }
 
-  const onSubmitCustomEvaluation = async () => {
-    try {
-      // Validate criteria
-      const validCriteria = customCriteria.filter(c => 
-        c.criterion_name.trim() && c.max_score > 0
-      )
+  const prepareCustomEvaluationSubmission = () => {
+    setCustomFormError('')
 
-      if (validCriteria.length === 0) {
-        alert('Please add at least one valid criterion with a name and max score.')
-        return
-      }
+    const validCriteria = customCriteria.filter(
+      (criterion) => criterion.criterion_name.trim() && criterion.max_score > 0
+    )
 
-      if (!customEvaluationData.projectId) {
-        alert('Please select a project.')
-        return
-      }
-
-      // Convert custom criteria to marks format
-      const marks = validCriteria.map(c => ({
-        criterion_name: c.criterion_name,
-        max_score: c.max_score,
-        score: c.score,
-        comments: c.comments || undefined
-      }))
-
-      await createEvaluationMutation.mutateAsync({
-        projectId: parseInt(customEvaluationData.projectId),
-        data: {
-          evaluation_type: 'PROJECT', // Use PROJECT as default for custom evaluations
-          comments: customEvaluationData.comments,
-          marks: marks
-        }
-      })
-
-      alert('Custom evaluation submitted successfully!')
-      closeCustomEvaluation()
-    } catch (error: any) {
-      alert(`Error submitting evaluation: ${error.message}`)
+    if (validCriteria.length === 0) {
+      setCustomFormError('Please add at least one valid criterion with a name and maximum score.')
+      return
     }
+
+    if (!customEvaluationData.projectId) {
+      setCustomFormError('Please select a project before submitting.')
+      return
+    }
+
+    const marks = validCriteria.map((criterion) => ({
+      criterion_name: criterion.criterion_name,
+      max_score: criterion.max_score,
+      score: criterion.score,
+      comments: criterion.comments || undefined,
+    }))
+
+    const projectIdNumber = parseInt(customEvaluationData.projectId, 10)
+    const targetProject = projects.find((project: any) => project.id === projectIdNumber)
+
+    setPendingAction({
+      type: 'CUSTOM',
+      payload: {
+        projectId: projectIdNumber,
+        data: {
+          evaluation_type: 'PROJECT',
+          comments: customEvaluationData.comments,
+          marks,
+        },
+      },
+    })
+
+    const maxTotal = marks.reduce((sum, mark) => sum + (mark.max_score || 0), 0)
+    setVerificationConfig({
+      title: 'Submit custom evaluation',
+      description: `You are about to submit a custom evaluation for ${
+        targetProject?.title || 'the selected project'
+      }. This action notifies the student immediately.`,
+      highlight: `${marks.length} custom criteria • ${maxTotal} maximum points.`,
+      confirmLabel: 'Submit evaluation',
+      tone: 'info',
+    })
   }
 
-  const onSubmit = async (data: EvaluationFormData) => {
+  const handleEvaluationSubmit = (data: EvaluationFormData) => {
+    const targetProject = projects.find((project: any) => project.id === data.projectId)
+    const totalScore = data.marks.reduce((sum, mark) => sum + (mark.score || 0), 0)
+
+    setPendingAction({
+      type: 'STANDARD',
+      payload: data,
+    })
+
+    setVerificationConfig({
+      title: `Submit ${data.evaluationType === 'PROJECT' ? 'project' : 'presentation'} evaluation`,
+      description: `You are about to finalize ${data.marks.length} criteria for ${
+        targetProject?.title || 'the selected project'
+      }. Students will be notified once this evaluation is saved.`,
+      highlight: `Scores to publish: ${totalScore} points • ${data.marks.length} criteria.`,
+      confirmLabel: 'Submit and notify student',
+      tone: 'info',
+    })
+  }
+
+  const closeVerificationModal = () => {
+    if (verificationLoading) return
+    setVerificationConfig(null)
+    setPendingAction(null)
+  }
+
+  const executePendingAction = async () => {
+    if (!pendingAction) return
+
     try {
-      await createEvaluationMutation.mutateAsync({
-        projectId: data.projectId,
-        data: {
-          evaluation_type: data.evaluationType,
-          comments: data.comments,
-          marks: data.marks
-        }
-      })
-      
-      alert(`${data.evaluationType === 'PROJECT' ? 'Project' : 'Presentation'} evaluation submitted successfully!`)
-      closeEvaluationForm()
+      setVerificationLoading(true)
+
+      if (pendingAction.type === 'STANDARD') {
+        const payload = pendingAction.payload
+        await createEvaluationMutation.mutateAsync({
+          projectId: payload.projectId,
+          data: {
+            evaluation_type: payload.evaluationType,
+            comments: payload.comments,
+            marks: payload.marks,
+          },
+        })
+
+        addNotification('Evaluation submitted successfully.', 'success', {
+          title: 'Evaluation sent',
+          audience: 'ADMIN',
+          actionLabel: 'View project',
+          actionUrl: `/projects/${payload.projectId}`,
+        })
+        closeEvaluationForm()
+      } else {
+        await createEvaluationMutation.mutateAsync({
+          projectId: pendingAction.payload.projectId,
+          data: pendingAction.payload.data,
+        })
+
+        addNotification('Custom evaluation submitted successfully.', 'success', {
+          title: 'Evaluation sent',
+          audience: 'ADMIN',
+          actionLabel: 'Review submissions',
+          actionUrl: '/projects',
+        })
+        closeCustomEvaluation()
+      }
+
+      setVerificationConfig(null)
+      setPendingAction(null)
     } catch (error: any) {
-      alert(`Error submitting evaluation: ${error.message}`)
+      addNotification(error?.message || 'Failed to submit evaluation.', 'error', {
+        title: 'Submission failed',
+        audience: 'ADMIN',
+      })
+    } finally {
+      setVerificationLoading(false)
     }
   }
 
@@ -420,6 +518,11 @@ export default function EvaluationPage() {
           
           <div className="p-6">
             {/* Project Selection */}
+            {customFormError && (
+              <div className="mb-4 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-200">
+                {customFormError}
+              </div>
+            )}
             <div className="form-group mb-6">
               <label className="form-label">Project</label>
               <select 
@@ -552,10 +655,10 @@ export default function EvaluationPage() {
             <div style={{display: 'flex', gap: '15px', marginTop: '25px'}}>
               <button 
                 type="button"
-                onClick={onSubmitCustomEvaluation}
+                onClick={prepareCustomEvaluationSubmission}
                 className="btn-primary"
                 style={{flex: 1}}
-                disabled={createEvaluationMutation.isPending}
+                disabled={createEvaluationMutation.isPending || verificationLoading}
               >
                 {createEvaluationMutation.isPending ? 'Submitting...' : 'Submit Custom Evaluation'}
               </button>
@@ -580,7 +683,7 @@ export default function EvaluationPage() {
             <button className="modal-close" onClick={closeEvaluationForm}>×</button>
           </div>
           
-          <form onSubmit={handleSubmit(onSubmit)}>
+          <form onSubmit={handleSubmit(handleEvaluationSubmit)}>
             <input type="hidden" {...register('evaluationType', { required: true })} />
             
             <div className="form-group">
@@ -604,6 +707,19 @@ export default function EvaluationPage() {
                   Filtering projects for Level {selectedLevel}
                 </div>
               )}
+              
+              {/* Project Search Input */}
+              <div className="mb-2">
+                <input
+                  type="text"
+                  placeholder="Search projects by title or student name..."
+                  className="form-input w-full"
+                  value={projectSearchTerm}
+                  onChange={(e) => setProjectSearchTerm(e.target.value)}
+                  disabled={!!selectedProject}
+                />
+              </div>
+              
               <select 
                 className="form-select" 
                 {...register('projectId', { required: 'Please select a project' })}
@@ -616,7 +732,17 @@ export default function EvaluationPage() {
                   (selectedLevel 
                     ? projects.filter((project: any) => project.level === selectedLevel)
                     : projects
-                  ).map((project: any) => (
+                  )
+                  .filter((project: any) => {
+                    if (!projectSearchTerm) return true
+                    const searchLower = projectSearchTerm.toLowerCase()
+                    return (
+                      project.title?.toLowerCase().includes(searchLower) ||
+                      project.student_name?.toLowerCase().includes(searchLower) ||
+                      project.study_program_name?.toLowerCase().includes(searchLower)
+                    )
+                  })
+                  .map((project: any) => (
                     <option key={project.id} value={project.id}>
                       {project.title} - {project.student_name} (Level {project.level})
                     </option>
@@ -627,6 +753,24 @@ export default function EvaluationPage() {
               </select>
               {errors.projectId && (
                 <p className="text-red-500 text-sm mt-1">{errors.projectId.message}</p>
+              )}
+              {projectSearchTerm && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {projects && projects.length > 0 ? (
+                    (selectedLevel 
+                      ? projects.filter((project: any) => project.level === selectedLevel)
+                      : projects
+                    ).filter((project: any) => {
+                      if (!projectSearchTerm) return true
+                      const searchLower = projectSearchTerm.toLowerCase()
+                      return (
+                        project.title?.toLowerCase().includes(searchLower) ||
+                        project.student_name?.toLowerCase().includes(searchLower) ||
+                        project.study_program_name?.toLowerCase().includes(searchLower)
+                      )
+                    }).length
+                  ) : 0} project(s) found
+                </p>
               )}
             </div>
 
@@ -737,7 +881,7 @@ export default function EvaluationPage() {
                 type="submit" 
                 className="btn-primary" 
                 style={{flex: 1}}
-                disabled={createEvaluationMutation.isPending}
+                disabled={createEvaluationMutation.isPending || verificationLoading}
               >
                 {createEvaluationMutation.isPending ? 'Submitting...' : 'Submit Evaluation'}
               </button>
@@ -753,6 +897,18 @@ export default function EvaluationPage() {
           </form>
         </div>
       </div>
+
+      <VerificationModal
+        open={!!verificationConfig}
+        title={verificationConfig?.title || ''}
+        description={verificationConfig?.description || ''}
+        highlight={verificationConfig?.highlight}
+        confirmLabel={verificationConfig?.confirmLabel || 'Confirm'}
+        tone={verificationConfig?.tone || 'info'}
+        loading={verificationLoading || createEvaluationMutation.isPending}
+        onConfirm={executePendingAction}
+        onCancel={closeVerificationModal}
+      />
     </div>
   )
 }

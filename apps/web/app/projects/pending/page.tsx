@@ -8,7 +8,7 @@ import Link from 'next/link'
 export default function PendingProjectsPage() {
   const { isDarkMode } = useThemeStore()
   const { data: projectsData, isLoading, error } = useProjects()
-  const projects = projectsData?.projects || projectsData || []
+  const projects = useMemo(() => projectsData?.projects || projectsData || [], [projectsData])
   const [searchTerm, setSearchTerm] = useState('')
 
   // Filter only pending projects

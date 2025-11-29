@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { authAPI, getTokens, clearTokens } from './api'
 
 export type NotificationType = 'success' | 'error' | 'info' | 'warning'
+export type NotificationAudience = 'ADMIN' | 'STUDENT' | 'ALL'
 
 export interface NotificationItem {
   id: string
@@ -12,6 +13,8 @@ export interface NotificationItem {
   read: boolean
   actionLabel?: string
   actionUrl?: string
+  audience?: NotificationAudience
+  userId?: number  // Optional: if set, only this user will see the notification
 }
 
 export interface User {
@@ -51,7 +54,13 @@ export interface UIState {
   addNotification: (
     message: string,
     type: NotificationType,
-    options?: { title?: string; actionLabel?: string; actionUrl?: string }
+    options?: {
+      title?: string
+      actionLabel?: string
+      actionUrl?: string
+      audience?: NotificationAudience
+      userId?: number
+    }
   ) => void
   markNotificationRead: (id: string) => void
   markAllNotificationsRead: () => void
@@ -194,7 +203,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   addNotification: (
     message: string,
     type: NotificationType,
-    options?: { title?: string; actionLabel?: string; actionUrl?: string }
+    options?: { title?: string; actionLabel?: string; actionUrl?: string; audience?: NotificationAudience; userId?: number }
   ) => {
     const notification: NotificationItem = {
       id: Date.now().toString(),
@@ -205,6 +214,8 @@ export const useUIStore = create<UIState>((set, get) => ({
       read: false,
       actionLabel: options?.actionLabel,
       actionUrl: options?.actionUrl,
+      audience: options?.audience || 'ALL',
+      userId: options?.userId,
     }
     set((state) => ({
       notifications: [...state.notifications, notification],
@@ -366,22 +377,22 @@ export const useThemeStore = create<ThemeState>((set, get) => {
 
   return {
     isDarkMode: initializeDarkMode(),
-    
+
     toggleDarkMode: () => {
       const currentMode = get().isDarkMode
       const newMode = !currentMode
       set({ isDarkMode: newMode })
-      
+
       // Save to localStorage
       if (typeof window !== 'undefined') {
         localStorage.setItem('darkMode', String(newMode))
         document.documentElement.classList.toggle('dark', newMode)
       }
     },
-    
+
     setDarkMode: (isDark: boolean) => {
       set({ isDarkMode: isDark })
-      
+
       // Save to localStorage
       if (typeof window !== 'undefined') {
         localStorage.setItem('darkMode', String(isDark))

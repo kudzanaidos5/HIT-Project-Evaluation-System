@@ -1,23 +1,46 @@
 from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.extensions import db
-from app.models.models import User, StudyProgram, Project, Evaluation, EvaluationMark, UserRole, ProjectLevel, Deadline, EvaluationType
+from app.models.models import User, Student, Admin, StudyProgram, Project, Evaluation, EvaluationMark, UserRole, ProjectLevel, Deadline, EvaluationType, ProjectStatus
 from marshmallow import Schema, fields, ValidationError
 from sqlalchemy import func, desc
+from sqlalchemy.orm import joinedload
 from functools import wraps
 from datetime import datetime, time
 import csv
 from io import StringIO, BytesIO
 from reportlab.lib.pagesizes import LETTER
-from reportlab.pdfgen import canvas
+from reportlab.pdfgen.canvas import Canvas
 from reportlab.lib.utils import simpleSplit
 
 api_bp = Blueprint('api', __name__)
+
+# Handle OPTIONS requests for CORS preflight (Flask-CORS should handle this, but this ensures it works)
+@api_bp.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = make_response()
+        # Get CORS origins from config
+        from flask import current_app
+        cors_origins = current_app.config.get("CORS_ORIGINS", "http://localhost:3000")
+        if isinstance(cors_origins, str) and ',' in cors_origins:
+            cors_origins = [origin.strip() for origin in cors_origins.split(',')]
+        elif isinstance(cors_origins, str):
+            cors_origins = [cors_origins]
+        
+        origin = request.headers.get('Origin')
+        if origin in cors_origins or '*' in cors_origins:
+            response.headers.add("Access-Control-Allow-Origin", origin or cors_origins[0] if cors_origins else "*")
+        response.headers.add('Access-Control-Allow-Headers', "Content-Type, Authorization")
+        response.headers.add('Access-Control-Allow-Methods', "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        response.headers.add('Access-Control-Allow-Credentials', "true")
+        return response
 class UserSchema(Schema):
     name = fields.Str(required=True, min_length=2, max_length=100)
     email = fields.Email(required=True)
     password = fields.Str(required=True, min_length=6)
     role = fields.Str(required=True, validate=lambda x: x in ['ADMIN', 'STUDENT'])
+    registration_number = fields.Str(allow_none=True, missing=None)
 
 class CourseSchema(Schema):
     code = fields.Str(required=True, min_length=2, max_length=20)
@@ -108,10 +131,10 @@ def _build_report_summary(level_param=None, start_date_str=None, end_date_str=No
 
     total_projects = project_query.count()
     evaluated_projects = project_query.join(Evaluation).distinct(Project.id).count()
-    pending_projects = project_query.filter(Project.status == 'pending').count()
-    completed_projects = project_query.filter(Project.status == 'evaluated').count()
+    pending_projects = project_query.filter(Project.status == ProjectStatus.DRAFT).count()
+    completed_projects = project_query.filter(Project.status == ProjectStatus.EVALUATED).count()
     status_rows = project_query.with_entities(Project.status, func.count(Project.id)).group_by(Project.status).all()
-    status_breakdown = {status: count for status, count in status_rows}
+    status_breakdown = {status.value if isinstance(status, ProjectStatus) else str(status): count for status, count in status_rows}
 
     evaluation_query = Evaluation.query.join(Project)
     if level:
@@ -136,6 +159,7 @@ def _build_report_summary(level_param=None, start_date_str=None, end_date_str=No
 
     study_program_query = db.session.query(
         StudyProgram.name.label('study_program_name'),
+        Project.level,
         func.count(Project.id).label('project_count'),
         func.avg(Evaluation.total_score).label('average_score')
     ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id)
@@ -147,9 +171,10 @@ def _build_report_summary(level_param=None, start_date_str=None, end_date_str=No
     if end_date:
         study_program_query = study_program_query.filter(Project.created_at <= end_date)
 
-    study_program_rows = study_program_query.group_by(StudyProgram.id).all()
+    study_program_rows = study_program_query.group_by(StudyProgram.id, Project.level).all()
     study_programs = [{
         "study_program_name": row.study_program_name,
+        "level": row.level.value if isinstance(row.level, ProjectLevel) else row.level,
         "project_count": row.project_count,
         "average_score": round(row.average_score, 2) if row.average_score is not None else None
     } for row in study_program_rows]
@@ -287,7 +312,7 @@ def _report_summary_to_csv(summary):
 
 def _report_summary_to_pdf(summary):
     buffer = BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=LETTER)
+    pdf = Canvas(buffer, pagesize=LETTER)
     width, height = LETTER
     margin = 40
     line_height = 14
@@ -445,6 +470,14 @@ def create_course():
     except ValidationError as err:
         return jsonify({"error": "Validation error", "details": err.messages}), 400
     
+    # Validate study program code format: 2-3 letters followed by 200 or 400
+    import re
+    code = data['code'].upper().strip()
+    if not re.match(r'^[A-Z]{2,3}(200|400)$', code):
+        return jsonify({"error": "Study program code must be 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)"}), 400
+    
+    data['code'] = code
+    
     # Check if course code already exists
     if StudyProgram.query.filter_by(code=data['code']).first():
         return jsonify({"error": "Course with this code already exists"}), 409
@@ -468,6 +501,14 @@ def update_course(course_id):
     try:
         course = StudyProgram.query.get_or_404(course_id)
         data = course_schema.load(request.json)
+        
+        # Validate study program code format: 2-3 letters followed by 200 or 400
+        import re
+        code = data['code'].upper().strip()
+        if not re.match(r'^[A-Z]{2,3}(200|400)$', code):
+            return jsonify({"error": "Study program code must be 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)"}), 400
+        
+        data['code'] = code
         
         # Check if course code is already taken by another course
         existing_course = StudyProgram.query.filter_by(code=data['code']).first()
@@ -552,6 +593,7 @@ def get_evaluation_templates():
 # Projects Routes
 @api_bp.route('/projects', methods=['GET'])
 @jwt_required()
+@require_admin_role()
 def get_projects():
     try:
         # Get query parameters for filtering and search
@@ -575,7 +617,12 @@ def get_projects():
             )
         
         if status:
-            query = query.filter(Project.status == status)
+            try:
+                status_enum = ProjectStatus(status)
+                query = query.filter(Project.status == status_enum)
+            except ValueError:
+                # Fallback to string comparison for backward compatibility
+                query = query.filter(Project.status == status)
         
         if level:
             query = query.filter(Project.level == int(level))
@@ -601,12 +648,17 @@ def get_projects():
         }), 200
         
     except Exception as e:
-        return jsonify({"error": "Failed to fetch projects"}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in get_projects: {str(e)}")
+        print(error_details)
+        return jsonify({"error": "Failed to fetch projects", "details": str(e)}), 500
 
 @api_bp.route('/projects', methods=['POST'])
 @jwt_required()
 @require_admin_role()
 def create_project():
+    """Admin-only endpoint to create projects (for backward compatibility)"""
     try:
         data = project_schema.load(request.json)
     except ValidationError as err:
@@ -628,6 +680,70 @@ def create_project():
     db.session.commit()
     
     return jsonify(project.to_dict()), 201
+
+@api_bp.route('/students/me/project', methods=['POST'])
+@jwt_required()
+def create_my_project():
+    """Allow students to create their own project"""
+    try:
+        current_user, student = get_current_student()
+        
+        if not current_user or not student:
+            return jsonify({"error": "Access denied"}), 403
+        
+        # Check if student already has a project (one-to-one relationship)
+        existing_project = Project.query.filter_by(student_id=student.id).first()
+        if existing_project:
+            return jsonify({"error": "You already have a project. Each student can only have one project."}), 400
+        
+        # Get request data
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        # Validate required fields
+        title = data.get('title', '').strip()
+        if not title or len(title) < 2:
+            return jsonify({"error": "Project title is required (minimum 2 characters)"}), 400
+        
+        study_program_id = data.get('study_program_id')
+        if not study_program_id:
+            return jsonify({"error": "Study program is required"}), 400
+        
+        level = data.get('level')
+        if level not in [200, 400]:
+            return jsonify({"error": "Level must be 200 or 400"}), 400
+        
+        # Validate study program exists
+        study_program = StudyProgram.query.get(study_program_id)
+        if not study_program:
+            return jsonify({"error": "Study program not found"}), 404
+        
+        # Create project with pending approval status
+        project = Project(
+            title=title,
+            description=data.get('description', '').strip(),
+            level=ProjectLevel(level),
+            study_program_id=study_program_id,
+            student_id=student.id,
+            status=ProjectStatus.PENDING_APPROVAL
+        )
+        
+        db.session.add(project)
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Project created successfully",
+            "project": project.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in create_my_project: {str(e)}")
+        print(error_details)
+        return jsonify({"error": "Failed to create project", "details": str(e)}), 500
 
 @api_bp.route('/projects/<int:project_id>', methods=['PUT'])
 @jwt_required()
@@ -696,6 +812,86 @@ def get_project(project_id):
         
     except Exception as e:
         return jsonify({"error": "Failed to fetch project"}), 500
+
+@api_bp.route('/projects/<int:project_id>/approve', methods=['POST'])
+@jwt_required()
+@require_admin_role()
+def approve_project(project_id):
+    """Admin endpoint to approve a project"""
+    try:
+        project = Project.query.get_or_404(project_id)
+        
+        # Normalize status for comparison (handle both enum and string)
+        try:
+            current_status = _normalize_status(project.status)
+        except ValueError as e:
+            return jsonify({"error": f"Invalid project status: {e}"}), 400
+        
+        if current_status != ProjectStatus.PENDING_APPROVAL:
+            return jsonify({"error": f"Project is not pending approval. Current status: {current_status.value}"}), 400
+        
+        # Approve project: change status to DRAFT so student can proceed
+        success, error = update_project_status(project, ProjectStatus.DRAFT)
+        if not success:
+            db.session.rollback()
+            return jsonify({"error": f"Failed to approve project: {error}"}), 500
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Project approved successfully",
+            "project": project.to_dict()
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in approve_project: {str(e)}")
+        print(error_details)
+        return jsonify({"error": "Failed to approve project", "details": str(e)}), 500
+
+@api_bp.route('/projects/<int:project_id>/reject', methods=['POST'])
+@jwt_required()
+@require_admin_role()
+def reject_project(project_id):
+    """Admin endpoint to reject a project"""
+    try:
+        project = Project.query.get_or_404(project_id)
+        
+        # Normalize status for comparison (handle both enum and string)
+        try:
+            current_status = _normalize_status(project.status)
+        except ValueError as e:
+            return jsonify({"error": f"Invalid project status: {e}"}), 400
+        
+        if current_status != ProjectStatus.PENDING_APPROVAL:
+            return jsonify({"error": f"Project is not pending approval. Current status: {current_status.value}"}), 400
+        
+        # Get rejection reason from request (optional)
+        data = request.json or {}
+        rejection_reason = data.get('reason', '').strip()
+        
+        # Reject project: change status to REJECTED
+        success, error = update_project_status(project, ProjectStatus.REJECTED)
+        if not success:
+            db.session.rollback()
+            return jsonify({"error": f"Failed to reject project: {error}"}), 500
+        
+        # Store rejection reason in description if provided (or could add a separate field)
+        if rejection_reason:
+            project.description = (project.description or '') + f"\n\n[Rejection Reason: {rejection_reason}]"
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Project rejected successfully",
+            "project": project.to_dict()
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to reject project", "details": str(e)}), 500
 
 # Evaluations Routes
 @api_bp.route('/projects/<int:project_id>/evaluations', methods=['GET'])
@@ -850,6 +1046,18 @@ def create_evaluation(project_id):
         project_eval.grade = grade
         presentation_eval.overall_percentage = overall_percentage
         presentation_eval.grade = grade
+        
+        # Automatic status transition: both evaluations exist -> EVALUATED
+        success, error = update_project_status(project, ProjectStatus.EVALUATED)
+        if not success:
+            # Log error but don't fail the request
+            print(f"Warning: Could not update project status: {error}")
+    else:
+        # First evaluation created -> transition to UNDER_REVIEW
+        if project.status == ProjectStatus.SUBMITTED:
+            success, error = update_project_status(project, ProjectStatus.UNDER_REVIEW)
+            if not success:
+                print(f"Warning: Could not update project status: {error}")
     
     db.session.commit()
     return jsonify(evaluation.to_dict()), 201
@@ -910,6 +1118,25 @@ def create_user():
     try:
         data = user_schema.load(request.json)
         
+        # Normalize email to lowercase
+        data['email'] = data['email'].lower().strip()
+        
+        # Validate email domain
+        if not data['email'].endswith('@hit.ac.zw'):
+            return jsonify({"error": "Email must be a valid HIT email address (@hit.ac.zw)"}), 400
+        
+        # Normalize registration_number: convert empty strings to None
+        if 'registration_number' in data:
+            reg_num = data.get('registration_number')
+            if reg_num is not None and isinstance(reg_num, str) and not reg_num.strip():
+                data['registration_number'] = None
+        
+        # Validate: registration_number is required for STUDENT role
+        if data['role'] == 'STUDENT':
+            registration_number = data.get('registration_number')
+            if not registration_number or (isinstance(registration_number, str) and not registration_number.strip()):
+                return jsonify({"error": "Registration number is required for students"}), 400
+        
         # Check if user already exists
         existing_user = User.query.filter_by(email=data['email']).first()
         if existing_user:
@@ -924,6 +1151,22 @@ def create_user():
         user.set_password(data['password'])
         
         db.session.add(user)
+        db.session.flush()  # Get the user ID
+        
+        # Create student profile if role is STUDENT
+        if data['role'] == 'STUDENT':
+            registration_number = data.get('registration_number')
+            if not registration_number or not registration_number.strip():
+                db.session.rollback()
+                return jsonify({"error": "Registration number is required for students"}), 400
+            student_profile = Student(user_id=user.id, student_id=registration_number.strip())
+            db.session.add(student_profile)
+        
+        # Create admin profile if role is ADMIN
+        elif data['role'] == 'ADMIN':
+            admin_profile = Admin(user_id=user.id, department='Administration')
+            db.session.add(admin_profile)
+        
         db.session.commit()
         
         return jsonify({
@@ -945,28 +1188,130 @@ def update_user(user_id):
         user = User.query.get_or_404(user_id)
         data = request.json
         
+        # Store original role before any changes
+        original_role = user.role
+        
+        # Determine new role (if changing)
+        new_role = None
+        if 'role' in data:
+            new_role = UserRole.ADMIN if data['role'] == 'ADMIN' else UserRole.STUDENT
+        
         # Update user fields
         if 'name' in data:
             user.name = data['name']
         if 'email' in data:
+            # Normalize email to lowercase
+            email = data['email'].lower().strip()
+            
+            # Validate email domain
+            if not email.endswith('@hit.ac.zw'):
+                return jsonify({"error": "Email must be a valid HIT email address (@hit.ac.zw)"}), 400
+            
             # Check if email is already taken by another user
-            existing_user = User.query.filter_by(email=data['email']).first()
+            existing_user = User.query.filter_by(email=email).first()
             if existing_user and existing_user.id != user_id:
                 return jsonify({"error": "Email already taken by another user"}), 400
+            
+            user.email = email
             user.email = data['email']
-        if 'role' in data:
-            user.role = UserRole.ADMIN if data['role'] == 'ADMIN' else UserRole.STUDENT
+        if 'password' in data and data['password']:
+            # Update password if provided
+            user.set_password(data['password'])
+        
+        # Handle role change and profile management
+        if new_role and new_role != original_role:
+            # Role is being changed
+            if original_role == UserRole.STUDENT and new_role == UserRole.ADMIN:
+                # Remove student profile if changing from STUDENT to ADMIN
+                student_profile = Student.query.filter_by(user_id=user_id).first()
+                if student_profile:
+                    db.session.delete(student_profile)
+                # Create admin profile if it doesn't exist
+                admin_profile = Admin.query.filter_by(user_id=user_id).first()
+                if not admin_profile:
+                    admin_profile = Admin(user_id=user.id, department='Administration')
+                    db.session.add(admin_profile)
+            elif original_role == UserRole.ADMIN and new_role == UserRole.STUDENT:
+                # Remove admin profile if changing from ADMIN to STUDENT
+                admin_profile = Admin.query.filter_by(user_id=user_id).first()
+                if admin_profile:
+                    db.session.delete(admin_profile)
+                # Registration number is required when changing to STUDENT
+                registration_number = data.get('registration_number')
+                if not registration_number or (isinstance(registration_number, str) and not registration_number.strip()):
+                    return jsonify({"error": "Registration number is required when changing role to STUDENT"}), 400
+                registration_number = registration_number.strip() if isinstance(registration_number, str) else registration_number
+                
+                # Check if registration number is already taken
+                existing_student = Student.query.filter_by(student_id=registration_number).first()
+                if existing_student:
+                    return jsonify({"error": "Registration number already taken by another student"}), 400
+                
+                # Create student profile with registration number
+                student_profile = Student.query.filter_by(user_id=user_id).first()
+                if not student_profile:
+                    student_profile = Student(user_id=user.id, student_id=registration_number)
+                    db.session.add(student_profile)
+                else:
+                    student_profile.student_id = registration_number
+            user.role = new_role
+        
+        # Handle registration_number (student profile)
+        # Determine if user should have student profile (after role update)
+        target_role = new_role if new_role else original_role
+        
+        if target_role == UserRole.STUDENT:
+            # Registration number is required for students
+            if 'registration_number' in data:
+                registration_number = data['registration_number']
+                # Normalize: convert empty strings to None
+                if registration_number is not None and isinstance(registration_number, str):
+                    registration_number = registration_number.strip() if registration_number.strip() else None
+                
+                if not registration_number:
+                    return jsonify({"error": "Registration number is required for students"}), 400
+                
+                # Check if registration number is already taken by another student
+                existing_student = Student.query.filter_by(student_id=registration_number).first()
+                if existing_student and existing_student.user_id != user_id:
+                    return jsonify({"error": "Registration number already taken by another student"}), 400
+                
+                # Create or update student profile
+                student_profile = Student.query.filter_by(user_id=user_id).first()
+                if not student_profile:
+                    # Create new student profile
+                    student_profile = Student(user_id=user.id, student_id=registration_number)
+                    db.session.add(student_profile)
+                else:
+                    student_profile.student_id = registration_number
+            else:
+                # If registration_number not provided, check if student already has one
+                student_profile = Student.query.filter_by(user_id=user_id).first()
+                if not student_profile or not student_profile.student_id:
+                    return jsonify({"error": "Registration number is required for students"}), 400
         
         db.session.commit()
         
+        # Re-query user to get fresh instance with relationships loaded
+        updated_user = User.query.options(
+            joinedload(User.student_profile),
+            joinedload(User.admin_profile)
+        ).get(user_id)
+        
+        if not updated_user:
+            return jsonify({"error": "User not found after update"}), 404
+        
         return jsonify({
             'message': 'User updated successfully',
-            'user': user.to_dict()
+            'user': updated_user.to_dict()
         }), 200
         
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to update user"}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error updating user: {error_details}")  # Log for debugging
+        return jsonify({"error": "Failed to update user", "details": str(e)}), 500
 
 @api_bp.route('/users/<int:user_id>', methods=['DELETE'])
 @jwt_required()
@@ -975,15 +1320,25 @@ def delete_user(user_id):
     try:
         user = User.query.get_or_404(user_id)
         
-        # Check if user has projects
-        projects = Project.query.filter_by(student_id=user_id).all()
-        if projects:
-            return jsonify({"error": "Cannot delete user with existing projects"}), 400
+        # Check if user has projects (through student profile)
+        if user.student_profile:
+            student_id = user.student_profile.id
+            project_count = Project.query.filter_by(student_id=student_id).count()
+            if project_count > 0:
+                return jsonify({
+                    "error": f"Cannot delete user with existing projects",
+                    "details": f"User has {project_count} associated project(s). Please delete or reassign the projects first.",
+                    "project_count": project_count
+                }), 400
         
         # Check if user has evaluations
-        evaluations = Evaluation.query.filter_by(admin_id=user_id).all()
-        if evaluations:
-            return jsonify({"error": "Cannot delete user with existing evaluations"}), 400
+        evaluation_count = Evaluation.query.filter_by(admin_id=user_id).count()
+        if evaluation_count > 0:
+            return jsonify({
+                "error": f"Cannot delete user with existing evaluations",
+                "details": f"User has created {evaluation_count} evaluation(s). Evaluations cannot be deleted for data integrity.",
+                "evaluation_count": evaluation_count
+            }), 400
         
         db.session.delete(user)
         db.session.commit()
@@ -992,7 +1347,10 @@ def delete_user(user_id):
         
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to delete user"}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error deleting user: {error_details}")  # Log for debugging
+        return jsonify({"error": "Failed to delete user", "details": str(e)}), 500
 @api_bp.route('/analytics/averages', methods=['GET'])
 @jwt_required()
 @require_admin_role()
@@ -1057,6 +1415,7 @@ def get_performance_by_course():
     
     query = db.session.query(
         StudyProgram.name,
+        Project.level,
         func.avg(Evaluation.total_score).label('avg_score'),
         func.count(Evaluation.id).label('evaluation_count')
     ).select_from(StudyProgram).join(Project, StudyProgram.id == Project.study_program_id).join(
@@ -1068,10 +1427,11 @@ def get_performance_by_course():
         level = ProjectLevel(int(level_param))
         query = query.filter(Project.level == level)
     
-    results = query.group_by(StudyProgram.id).all()
+    results = query.group_by(StudyProgram.id, Project.level).all()
     
     return jsonify([{
         'study_program_name': result.name,
+        'level': result.level.value if isinstance(result.level, ProjectLevel) else result.level,
         'average_score': round(result.avg_score, 2),
         'evaluation_count': result.evaluation_count
     } for result in results]), 200
@@ -1095,10 +1455,49 @@ def get_pipeline_data():
     
     pipeline_data = query.group_by(Project.status).all()
     
-    return jsonify([{
-        'status': status,
-        'count': count
-    } for status, count in pipeline_data]), 200
+    # Convert ProjectStatus enum to string value for JSON serialization
+    # SQLAlchemy may return enum in different formats, so we handle all cases
+    result = []
+    for status_obj, count in pipeline_data:
+        # Convert enum to string - handle all possible representations
+        status_str = None
+        try:
+            # Method 1: If it's already a ProjectStatus enum, get its value
+            if isinstance(status_obj, ProjectStatus):
+                status_str = status_obj.value
+            # Method 2: If it has a value attribute (enum-like object)
+            elif hasattr(status_obj, 'value'):
+                val = status_obj.value
+                # If value is still an enum, get its value recursively
+                if isinstance(val, ProjectStatus):
+                    status_str = val.value
+                else:
+                    status_str = str(val)
+            # Method 3: Try to normalize and get value
+            else:
+                normalized = _normalize_status(status_obj)
+                status_str = normalized.value if isinstance(normalized, ProjectStatus) else str(normalized)
+        except Exception:
+            # Ultimate fallback: convert to string
+            status_str = str(status_obj) if status_obj else ''
+            # If string representation looks like enum, try to extract value
+            if status_str.startswith('ProjectStatus.'):
+                try:
+                    enum_name = status_str.split('.')[-1]
+                    status_str = ProjectStatus[enum_name].value
+                except (KeyError, AttributeError):
+                    pass
+        
+        # Ensure we have a string, not an enum
+        if not isinstance(status_str, str):
+            status_str = str(status_str)
+        
+        result.append({
+            'status': status_str,
+            'count': int(count) if count is not None else 0
+        })
+    
+    return jsonify(result), 200
 
 @api_bp.route('/analytics/top-projects', methods=['GET'])
 @jwt_required()
@@ -1238,6 +1637,93 @@ def update_deadline(deadline_id):
         db.session.rollback()
         return jsonify({"error": "Failed to update deadline"}), 500
 
+@api_bp.route('/deadlines/missed', methods=['GET'])
+@jwt_required()
+@require_admin_role()
+def get_missed_deadlines():
+    """Get list of students who missed deadlines for each level"""
+    try:
+        now = datetime.utcnow()
+        result = {
+            'level_200': [],
+            'level_400': []
+        }
+        
+        # Get deadlines for each level
+        deadline_200 = Deadline.query.filter_by(level=ProjectLevel.LEVEL_200).first()
+        deadline_400 = Deadline.query.filter_by(level=ProjectLevel.LEVEL_400).first()
+        
+        # Check Level 200 projects
+        if deadline_200 and deadline_200.deadline < now:
+            # Get all projects at level 200
+            projects_200 = Project.query.filter_by(level=ProjectLevel.LEVEL_200).all()
+            for project in projects_200:
+                student = project.student
+                student_user = getattr(student, 'user', None)
+                
+                # Student missed deadline if:
+                # 1. They haven't submitted (submitted_at is None), OR
+                # 2. They submitted after the deadline
+                missed = False
+                if not project.submitted_at:
+                    missed = True
+                elif project.submitted_at > deadline_200.deadline:
+                    missed = True
+                
+                if missed and student_user:
+                    result['level_200'].append({
+                        'project_id': project.id,
+                        'project_title': project.title,
+                        'student_id': student_user.id,
+                        'student_name': student_user.name,
+                        'student_email': student_user.email,
+                        'student_registration': student.student_id if student else None,
+                        'study_program': project.study_program.name if project.study_program else None,
+                        'submitted_at': project.submitted_at.isoformat() if project.submitted_at else None,
+                        'deadline': deadline_200.deadline.isoformat(),
+                        'days_overdue': (now - deadline_200.deadline).days
+                    })
+        
+        # Check Level 400 projects
+        if deadline_400 and deadline_400.deadline < now:
+            # Get all projects at level 400
+            projects_400 = Project.query.filter_by(level=ProjectLevel.LEVEL_400).all()
+            for project in projects_400:
+                student = project.student
+                student_user = getattr(student, 'user', None)
+                
+                # Student missed deadline if:
+                # 1. They haven't submitted (submitted_at is None), OR
+                # 2. They submitted after the deadline
+                missed = False
+                if not project.submitted_at:
+                    missed = True
+                elif project.submitted_at > deadline_400.deadline:
+                    missed = True
+                
+                if missed and student_user:
+                    result['level_400'].append({
+                        'project_id': project.id,
+                        'project_title': project.title,
+                        'student_id': student_user.id,
+                        'student_name': student_user.name,
+                        'student_email': student_user.email,
+                        'student_registration': student.student_id if student else None,
+                        'study_program': project.study_program.name if project.study_program else None,
+                        'submitted_at': project.submitted_at.isoformat() if project.submitted_at else None,
+                        'deadline': deadline_400.deadline.isoformat(),
+                        'days_overdue': (now - deadline_400.deadline).days
+                    })
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in get_missed_deadlines: {str(e)}")
+        print(error_details)
+        return jsonify({"error": "Failed to fetch missed deadlines", "details": str(e)}), 500
+
 # Project Submission Routes
 @api_bp.route('/projects/<int:project_id>/submit', methods=['POST'])
 def submit_project(project_id):
@@ -1251,8 +1737,13 @@ def submit_project(project_id):
         
         # Update project with submission data
         project.github_link = data.get('github_link')
+        if 'documentation_link' in data:
+            project.documentation_link = data.get('documentation_link')
         project.submitted_at = datetime.utcnow()
-        project.status = 'submitted'
+        success, error = update_project_status(project, ProjectStatus.SUBMITTED)
+        if not success:
+            db.session.rollback()
+            return jsonify({"error": f"Failed to update project status: {error}"}), 500
         
         db.session.commit()
         return jsonify(project.to_dict()), 200
@@ -1317,3 +1808,545 @@ def create_detailed_evaluation():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": "Failed to create evaluation"}), 500
+
+# ============================================================================
+# Student Dashboard Endpoints
+# ============================================================================
+
+def get_current_student():
+    """Helper function to get current student profile from JWT token"""
+    current_user_id = get_jwt_identity()
+    try:
+        current_user_id = int(current_user_id)
+    except (ValueError, TypeError):
+        return None, None
+    
+    current_user = User.query.get(current_user_id)
+    if not current_user or current_user.role != UserRole.STUDENT:
+        return None, None
+    
+    student = Student.query.filter_by(user_id=current_user.id).first()
+    return current_user, student
+
+def verify_project_ownership(project_id, student_id):
+    """Verify that a project belongs to a student"""
+    project = Project.query.get(project_id)
+    if not project:
+        return None, "Project not found"
+    if project.student_id != student_id:
+        return None, "Project not found"  # Generic message for security
+    return project, None
+
+def _normalize_status(status):
+    """Helper function to normalize status to ProjectStatus enum"""
+    if isinstance(status, ProjectStatus):
+        return status
+    elif isinstance(status, str):
+        # Try to find enum by value
+        for ps in ProjectStatus:
+            if ps.value == status:
+                return ps
+        # If not found by value, try direct conversion
+        try:
+            return ProjectStatus(status)
+        except ValueError:
+            raise ValueError(f"Invalid status value: {status}")
+    else:
+        try:
+            return ProjectStatus(status)
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid status type: {type(status)}")
+
+def update_project_status(project, new_status):
+    """
+    Update project status with validation
+    
+    Args:
+        project: Project instance
+        new_status: ProjectStatus enum value
+    
+    Returns:
+        tuple: (success: bool, error_message: str or None)
+    """
+    try:
+        new_status = _normalize_status(new_status)
+    except ValueError as e:
+        return False, str(e)
+    
+    # Define valid status transitions
+    valid_transitions = {
+        ProjectStatus.PENDING_APPROVAL: [ProjectStatus.DRAFT, ProjectStatus.REJECTED],  # Can be approved or rejected
+        ProjectStatus.DRAFT: [ProjectStatus.SUBMITTED, ProjectStatus.REJECTED],
+        ProjectStatus.SUBMITTED: [ProjectStatus.UNDER_REVIEW, ProjectStatus.REJECTED],
+        ProjectStatus.UNDER_REVIEW: [ProjectStatus.EVALUATED, ProjectStatus.REJECTED],
+        ProjectStatus.EVALUATED: [],  # Final state, no transitions
+        ProjectStatus.REJECTED: [],  # Final state, no transitions
+    }
+    
+    try:
+        current_status = _normalize_status(project.status)
+    except ValueError as e:
+        return False, f"Invalid current status: {e}"
+    
+    # Allow same status (idempotent)
+    if current_status == new_status:
+        return True, None
+    
+    # Check if transition is valid
+    if new_status not in valid_transitions.get(current_status, []):
+        return False, f"Invalid status transition from {current_status.value} to {new_status.value}"
+    
+    # Update status
+    project.status = new_status
+    project.updated_at = datetime.utcnow()
+    
+    return True, None
+
+def calculate_status_timeline(project):
+    """
+    Calculate project status timeline in the new format
+    
+    Returns:
+        dict: Timeline with submitted, under_review, and evaluated stages
+    """
+    # Normalize project status to ProjectStatus enum
+    if isinstance(project.status, ProjectStatus):
+        current_status = project.status
+    else:
+        try:
+            current_status = ProjectStatus(project.status)
+        except (ValueError, AttributeError):
+            current_status = ProjectStatus.DRAFT
+    
+    timeline = {
+        "submitted": {"status": "pending", "date": None},
+        "under_review": {"status": "pending", "date": None},
+        "evaluated": {"status": "pending", "date": None}
+    }
+    
+    # Submitted stage
+    if project.submitted_at:
+        timeline["submitted"] = {
+            "status": "completed",
+            "date": project.submitted_at.isoformat()
+        }
+    
+    # Under review stage - triggered when first evaluation is created
+    evaluations = project.evaluations.all()
+    if evaluations:
+        first_eval = min(evaluations, key=lambda e: e.created_at)
+        if current_status == ProjectStatus.UNDER_REVIEW:
+            timeline["under_review"] = {
+                "status": "current",
+                "date": first_eval.created_at.isoformat()
+            }
+        elif current_status in [ProjectStatus.EVALUATED, ProjectStatus.REJECTED]:
+            timeline["under_review"] = {
+                "status": "completed",
+                "date": first_eval.created_at.isoformat()
+            }
+        else:
+            # If evaluations exist but status is still submitted, mark as current
+            timeline["under_review"] = {
+                "status": "current",
+                "date": first_eval.created_at.isoformat()
+            }
+    
+    # Evaluated stage - both PROJECT and PRESENTATION evaluations must exist
+    project_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
+    pres_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
+    
+    if project_eval and pres_eval:
+        latest_eval = max(project_eval, pres_eval, key=lambda e: e.created_at)
+        timeline["evaluated"] = {
+            "status": "completed",
+            "date": latest_eval.created_at.isoformat()
+        }
+    elif project_eval or pres_eval:
+        # One evaluation exists but not both
+        existing_eval = project_eval or pres_eval
+        timeline["evaluated"] = {
+            "status": "current",
+            "date": existing_eval.created_at.isoformat()
+        }
+    
+    return timeline
+
+def get_project_evaluation_details(project):
+    """Get detailed evaluation breakdown for a project"""
+    evaluations = project.evaluations.order_by(Evaluation.created_at.desc()).all()
+    if not evaluations:
+        return None
+    
+    # Get the latest evaluation (or combine both PROJECT and PRESENTATION if they exist)
+    project_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
+    presentation_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
+    
+    # Use project evaluation as primary, or presentation if that's all we have
+    primary_eval = project_eval or presentation_eval
+    if not primary_eval:
+        return None
+    
+    evaluator = User.query.get(primary_eval.admin_id)
+    
+    # Build marks breakdown
+    marks = {
+        "project_marks": {},
+        "presentation_marks": {}
+    }
+    
+    if project_eval:
+        # Get marks from EvaluationMark for project evaluation
+        for mark in project_eval.marks:
+            criterion_key = mark.criterion_name.lower().replace(' ', '_').replace('&', '').replace('-', '_')
+            marks["project_marks"][criterion_key] = {
+                "score": mark.score,
+                "max_score": mark.max_score,
+                "feedback": mark.comments or ""
+            }
+        
+        # Fallback to direct fields if no marks exist
+        if not marks["project_marks"]:
+            if project_eval.code_quality is not None:
+                marks["project_marks"]["code_quality"] = {
+                    "score": project_eval.code_quality,
+                    "max_score": 20,
+                    "feedback": ""
+                }
+            if project_eval.documentation_score is not None:
+                marks["project_marks"]["documentation"] = {
+                    "score": project_eval.documentation_score,
+                    "max_score": 20,
+                    "feedback": ""
+                }
+            if project_eval.functionality_score is not None:
+                marks["project_marks"]["functionality"] = {
+                    "score": project_eval.functionality_score,
+                    "max_score": 30,
+                    "feedback": ""
+                }
+    
+    if presentation_eval:
+        # Get marks from EvaluationMark for presentation evaluation
+        for mark in presentation_eval.marks:
+            criterion_key = mark.criterion_name.lower().replace(' ', '_').replace('&', '').replace('-', '_')
+            marks["presentation_marks"][criterion_key] = {
+                "score": mark.score,
+                "max_score": mark.max_score,
+                "feedback": mark.comments or ""
+            }
+        
+        # Fallback to direct fields if no marks exist
+        if not marks["presentation_marks"]:
+            if presentation_eval.clarity_communication is not None:
+                marks["presentation_marks"]["clarity_communication"] = {
+                    "score": presentation_eval.clarity_communication,
+                    "max_score": 10,
+                    "feedback": ""
+                }
+            if presentation_eval.visual_presentation is not None:
+                marks["presentation_marks"]["visual_presentation"] = {
+                    "score": presentation_eval.visual_presentation,
+                    "max_score": 10,
+                    "feedback": ""
+                }
+            if presentation_eval.technical_explanation is not None:
+                marks["presentation_marks"]["technical_explanation"] = {
+                    "score": presentation_eval.technical_explanation,
+                    "max_score": 10,
+                    "feedback": ""
+                }
+    
+    # Calculate total and percentage
+    # If both evaluations exist, use overall_percentage and grade
+    if project_eval and presentation_eval and project_eval.overall_percentage is not None:
+        total_score = project_eval.overall_percentage
+        percentage = project_eval.overall_percentage
+        grade = project_eval.grade
+        max_score = 100
+    else:
+        # Use primary evaluation's score
+        total_score = primary_eval.total_score
+        percentage = round(total_score, 2)
+        grade = primary_eval.grade
+        max_score = 100
+    
+    # Combine feedback from both evaluations if they exist
+    overall_feedback = ""
+    if project_eval and project_eval.comments:
+        overall_feedback += f"Project: {project_eval.comments}\n"
+    if presentation_eval and presentation_eval.comments:
+        overall_feedback += f"Presentation: {presentation_eval.comments}"
+    if not overall_feedback and primary_eval.comments:
+        overall_feedback = primary_eval.comments
+    
+    return {
+        "total_score": total_score,
+        "max_score": max_score,
+        "percentage": percentage,
+        "grade": grade,
+        "marks": marks,
+        "overall_feedback": overall_feedback.strip()
+    }
+
+@api_bp.route('/students/me/projects', methods=['GET'])
+@jwt_required()
+def get_my_projects():
+    """Get all projects belonging to the currently authenticated student"""
+    try:
+        current_user, student = get_current_student()
+        
+        if not current_user or not student:
+            return jsonify({"error": "Access denied"}), 403
+        
+        # Get query parameters
+        status = request.args.get('status')
+        level = request.args.get('level')
+        
+        # Build query
+        query = Project.query.filter_by(student_id=student.id)
+        
+        if status:
+            try:
+                status_enum = ProjectStatus(status)
+                query = query.filter_by(status=status_enum)
+            except ValueError:
+                # Fallback to string comparison for backward compatibility
+                query = query.filter_by(status=status)
+        
+        if level:
+            try:
+                query = query.filter_by(level=ProjectLevel(int(level)))
+            except ValueError:
+                return jsonify({"error": "Invalid level parameter"}), 400
+        
+        projects = query.order_by(Project.created_at.desc()).all()
+        
+        return jsonify({
+            'projects': [project.to_dict() for project in projects],
+            'total': len(projects)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch projects", "details": str(e)}), 500
+
+@api_bp.route('/students/me/dashboard', methods=['GET'])
+@jwt_required()
+def get_my_dashboard():
+    """Get comprehensive dashboard summary for the current student (single project)"""
+    try:
+        current_user, student = get_current_student()
+        
+        if not current_user or not student:
+            return jsonify({"error": "Access denied"}), 403
+        
+        # Get student's single project
+        project = Project.query.filter_by(student_id=student.id).first()
+        
+        # Calculate timeline
+        timeline = calculate_status_timeline(project) if project else None
+        
+        # Get evaluation details if project exists
+        has_evaluation = False
+        total_score = None
+        if project:
+            evaluations = project.evaluations.all()
+            has_evaluation = len(evaluations) > 0
+            if has_evaluation:
+                # Get overall percentage if both evaluations exist
+                project_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
+                pres_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
+                if project_eval and pres_eval and project_eval.overall_percentage:
+                    total_score = project_eval.overall_percentage
+                elif project_eval:
+                    total_score = project_eval.total_score
+                elif pres_eval:
+                    total_score = pres_eval.total_score
+        
+        # Build project summary
+        project_data = None
+        if project:
+            project_data = {
+                "id": project.id,
+                "title": project.title,
+                "status": project.status.value if isinstance(project.status, ProjectStatus) else project.status,
+                "level": project.level.value,
+                "submitted_at": project.submitted_at.isoformat() if project.submitted_at else None,
+                "status_timeline": timeline,
+                "has_evaluation": has_evaluation,
+                "total_score": total_score
+            }
+        
+        # Get deadlines for project's level
+        deadlines = []
+        if project:
+            deadline_obj = Deadline.query.filter_by(level=project.level).first()
+            if deadline_obj:
+                now = datetime.utcnow()
+                is_passed = deadline_obj.deadline < now
+                days_remaining = (deadline_obj.deadline - now).days if not is_passed else 0
+                
+                deadlines.append({
+                    "level": project.level.value,
+                    "deadline": deadline_obj.deadline.isoformat(),
+                    "is_passed": is_passed,
+                    "days_remaining": days_remaining
+                })
+        
+        return jsonify({
+            "student": {
+                "id": current_user.id,
+                "name": current_user.name,
+                "email": current_user.email,
+                "student_id": student.student_id
+            },
+            "project": project_data,
+            "deadlines": deadlines
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch dashboard data", "details": str(e)}), 500
+
+@api_bp.route('/students/me/projects/<int:project_id>', methods=['GET'])
+@jwt_required()
+def get_my_project(project_id):
+    """Get detailed information about a specific project with evaluation details"""
+    try:
+        current_user, student = get_current_student()
+        
+        if not current_user or not student:
+            return jsonify({"error": "Access denied"}), 403
+        
+        # Verify project ownership
+        project, error = verify_project_ownership(project_id, student.id)
+        if error:
+            return jsonify({"error": error}), 404
+        
+        # Get evaluation details
+        evaluation_details = get_project_evaluation_details(project)
+        
+        # Get timeline
+        timeline = calculate_status_timeline(project)
+        
+        # Build unified project response
+        study_program = project.study_program
+        student_user = getattr(project.student, 'user', None)
+        
+        project_data = {
+            "id": project.id,
+            "title": project.title,
+            "description": project.description,
+            "level": project.level.value,
+            "status": project.status.value if isinstance(project.status, ProjectStatus) else project.status,
+            "study_program": {
+                "id": study_program.id if study_program else None,
+                "code": study_program.code if study_program else None,
+                "name": study_program.name if study_program else None
+            },
+            "student": {
+                "id": student_user.id if student_user else None,
+                "name": student_user.name if student_user else None,
+                "student_id": project.student.student_id if project.student else None
+            },
+            "submission": {
+                "github_link": project.github_link,
+                "documentation_link": project.documentation_link,
+                "submitted_at": project.submitted_at.isoformat() if project.submitted_at else None
+            },
+            "timeline": timeline,
+            "created_at": project.created_at.isoformat(),
+            "updated_at": project.updated_at.isoformat()
+        }
+        
+        return jsonify({
+            "project": project_data,
+            "evaluation": evaluation_details
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch project", "details": str(e)}), 500
+
+@api_bp.route('/students/me/projects/<int:project_id>/submission', methods=['PUT'])
+@jwt_required()
+def update_my_project_submission(project_id):
+    """Update project submission (GitHub link, documentation link)"""
+    try:
+        current_user, student = get_current_student()
+        
+        if not current_user or not student:
+            return jsonify({"error": "Access denied"}), 403
+        
+        # Verify project ownership
+        project, error = verify_project_ownership(project_id, student.id)
+        if error:
+            return jsonify({"error": error}), 404
+        
+        # Check if project is approved (must be DRAFT or later status, not PENDING_APPROVAL or REJECTED)
+        if project.status == ProjectStatus.PENDING_APPROVAL:
+            return jsonify({"error": "Project is pending admin approval. You cannot submit until it is approved."}), 403
+        
+        if project.status == ProjectStatus.REJECTED:
+            return jsonify({"error": "Project has been rejected. Please contact an administrator."}), 403
+        
+        data = request.json
+        
+        # Update fields
+        if 'github_link' in data:
+            project.github_link = data['github_link']
+        
+        if 'documentation_link' in data:
+            project.documentation_link = data['documentation_link']
+        
+        if 'pdf_path' in data:
+            project.pdf_path = data['pdf_path']
+        
+        # If first submission, set submitted_at and trigger status transition
+        if not project.submitted_at:
+            project.submitted_at = datetime.utcnow()
+            # Automatic status transition: draft -> submitted
+            success, error = update_project_status(project, ProjectStatus.SUBMITTED)
+            if not success:
+                db.session.rollback()
+                return jsonify({"error": f"Failed to update project status: {error}"}), 500
+        
+        # Always update updated_at
+        project.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Submission updated successfully",
+            "project": project.to_dict()
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to update submission", "details": str(e)}), 500
+
+@api_bp.route('/students/me/projects/<int:project_id>/timeline', methods=['GET'])
+@jwt_required()
+def get_my_project_timeline(project_id):
+    """Get project status timeline"""
+    try:
+        current_user, student = get_current_student()
+        
+        if not current_user or not student:
+            return jsonify({"error": "Access denied"}), 403
+        
+        # Verify project ownership
+        project, error = verify_project_ownership(project_id, student.id)
+        if error:
+            return jsonify({"error": error}), 404
+        
+        # Calculate timeline
+        timeline, current_stage, progress_percentage = calculate_status_timeline(project)
+        
+        return jsonify({
+            "project_id": project_id,
+            "timeline": timeline,
+            "current_stage": current_stage,
+            "progress_percentage": progress_percentage
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch timeline", "details": str(e)}), 500

@@ -66,17 +66,64 @@ def seed_database():
         
         # Create study programs
         study_programs_data = [
-            {'code': 'CS200', 'name': 'Introduction to Programming', 'description': 'Basic programming concepts'},
-            {'code': 'CS400', 'name': 'Software Engineering', 'description': 'Advanced software development'},
-            {'code': 'IT200', 'name': 'Database Systems', 'description': 'Database design and management'},
-            {'code': 'IT400', 'name': 'Web Development', 'description': 'Modern web technologies'},
-            {'code': 'CY200', 'name': 'Network Security', 'description': 'Cybersecurity fundamentals'},
+            {
+                'code': 'CS200',
+                'name': 'Computer Science',
+                'description': None,  # "No description" in the image
+                'created_at': datetime(2025, 11, 17)
+            },
+            {
+                'code': 'CS400',
+                'name': 'Computer Science',
+                'description': 'Level400',
+                'created_at': datetime(2025, 11, 17)
+            },
+            {
+                'code': 'IT200',
+                'name': 'Information and Technology',
+                'description': 'Level 200',
+                'created_at': datetime(2025, 11, 17)
+            },
+            {
+                'code': 'IT400',
+                'name': 'Information and Technology',
+                'description': 'Level 400',
+                'created_at': datetime(2025, 11, 17)
+            },
+            {
+                'code': 'SE200',
+                'name': 'Software Engineering',
+                'description': 'Level 200',
+                'created_at': datetime(2025, 11, 17)
+            },
+            {
+                'code': 'SE400',
+                'name': 'Software Engineering',
+                'description': 'level 400',
+                'created_at': datetime(2025, 11, 25)
+            },
+            {
+                'code': 'ISA200',
+                'name': 'Information Security and Assurance',
+                'description': 'Level 200',
+                'created_at': datetime(2025, 11, 29)
+            },
+            {
+                'code': 'ISA400',
+                'name': 'Information Security and Assurance',
+                'description': 'Level 400',
+                'created_at': datetime(2025, 11, 29)
+            },
         ]
         
         for study_program_data in study_programs_data:
             study_program = StudyProgram.query.filter_by(code=study_program_data['code']).first()
             if not study_program:
+                # Extract created_at if provided, otherwise use default
+                created_at = study_program_data.pop('created_at', None)
                 study_program = StudyProgram(**study_program_data)
+                if created_at:
+                    study_program.created_at = created_at
                 db.session.add(study_program)
         
         db.session.commit()
@@ -115,7 +162,7 @@ def seed_database():
                 'title': 'Network Security Scanner',
                 'description': 'Automated network vulnerability assessment tool',
                 'level': ProjectLevel.LEVEL_400,
-                'course_code': 'CY200',
+                'course_code': 'ISA400',
                 'student_email': 'david.brown@hit.ac.zw'
             },
         ]

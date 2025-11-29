@@ -3,8 +3,9 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { analyticsAPI } from '../../lib/api'
-import { useThemeStore } from '../../lib/stores'
-import { Calendar, Clock, AlertCircle, CheckCircle, Save } from 'lucide-react'
+import { useThemeStore, useUIStore, useAuthStore } from '../../lib/stores'
+import { Calendar, Clock, AlertCircle, CheckCircle, Save, User, Mail, BookOpen } from 'lucide-react'
+import Link from 'next/link'
 
 interface Deadline {
   id: number
@@ -14,8 +15,24 @@ interface Deadline {
   updated_at: string
 }
 
+interface MissedDeadlineStudent {
+  project_id: number
+  project_title: string
+  student_id: number
+  student_name: string
+  student_email: string
+  student_registration: string | null
+  study_program: string | null
+  submitted_at: string | null
+  deadline: string
+  days_overdue: number
+}
+
 export default function DeadlinesPage() {
   const { isDarkMode } = useThemeStore()
+  const { addNotification } = useUIStore()
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'ADMIN'
   const [localDeadlines, setLocalDeadlines] = useState<Record<number, string>>({
     200: '',
     400: ''
@@ -28,6 +45,14 @@ export default function DeadlinesPage() {
     queryKey: ['deadlines'],
     queryFn: analyticsAPI.getDeadlines
   }) as { data: Deadline[] | undefined; isLoading: boolean }
+
+  // Fetch students who missed deadlines (admin only)
+  const { data: missedDeadlines, isLoading: missedLoading } = useQuery({
+    queryKey: ['missed-deadlines'],
+    queryFn: analyticsAPI.getMissedDeadlines,
+    enabled: isAdmin, // Only fetch for admins
+    refetchInterval: 60000, // Refetch every minute
+  }) as { data: { level_200: MissedDeadlineStudent[]; level_400: MissedDeadlineStudent[] } | undefined; isLoading: boolean }
 
   useEffect(() => {
     if (deadlines && Array.isArray(deadlines) && deadlines.length > 0) {
@@ -51,10 +76,10 @@ export default function DeadlinesPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deadlines'] })
-      alert('Deadline saved successfully!')
+      addNotification('Deadline saved successfully!', 'success', { title: 'Success' })
     },
     onError: (error: any) => {
-      alert(`Failed to save deadline: ${error.message}`)
+      addNotification(`Failed to save deadline: ${error.message}`, 'error', { title: 'Error' })
     }
   })
 
@@ -68,7 +93,7 @@ export default function DeadlinesPage() {
   const handleSave = (level: number) => {
     const deadline = localDeadlines[level]
     if (!deadline) {
-      alert('Please select a date and time')
+      addNotification('Please select a date and time', 'warning', { title: 'Validation Error' })
       return
     }
     saveDeadlineMutation.mutate({ level, deadline })
@@ -235,6 +260,169 @@ export default function DeadlinesPage() {
         </div>
       )}
 
+      {/* Missed Deadlines Section - Only show for admins */}
+      {isAdmin && (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-gradient-to-br from-red-500 to-orange-600 rounded-xl shadow-lg">
+              <AlertCircle className="h-7 w-7 text-white" />
+            </div>
+            <div>
+              <h2 className="text-3xl font-bold bg-gradient-to-r from-red-600 to-orange-600 bg-clip-text text-transparent">
+                Missed Deadlines
+              </h2>
+              <p className="text-gray-600 dark:text-gray-400 mt-1">Students who have missed their submission deadlines</p>
+            </div>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Level 200 Missed Deadlines */}
+            {missedDeadlines?.level_200.length > 0 && (
+              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-red-200 dark:border-red-800 overflow-hidden">
+                <div className="bg-gradient-to-r from-red-500 via-red-600 to-orange-600 px-6 py-5">
+                  <h3 className="text-2xl font-bold text-white">Level 200 - Missed Deadlines</h3>
+                  <p className="text-red-100 text-sm mt-1">
+                    {missedDeadlines.level_200.length} student{missedDeadlines.level_200.length !== 1 ? 's' : ''} missed the deadline
+                  </p>
+                </div>
+                <div className="p-6">
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {missedDeadlines.level_200.map((student) => (
+                      <div
+                        key={student.project_id}
+                        className="border border-red-200 dark:border-red-800 rounded-lg p-4 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex-1">
+                            <Link
+                              href={`/projects/${student.project_id}`}
+                              className="font-semibold text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                            >
+                              {student.project_title}
+                            </Link>
+                          </div>
+                          <span className="px-2 py-1 text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200 rounded-full">
+                            {student.days_overdue} day{student.days_overdue !== 1 ? 's' : ''} overdue
+                          </span>
+                        </div>
+                        <div className="space-y-1 text-sm text-gray-600 dark:text-gray-400">
+                          <div className="flex items-center gap-2">
+                            <User className="h-4 w-4" />
+                            <span>{student.student_name}</span>
+                            {student.student_registration && (
+                              <span className="text-gray-500 dark:text-gray-500">
+                                ({student.student_registration})
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Mail className="h-4 w-4" />
+                            <span>{student.student_email}</span>
+                          </div>
+                          {student.study_program && (
+                            <div className="flex items-center gap-2">
+                              <BookOpen className="h-4 w-4" />
+                              <span>{student.study_program}</span>
+                            </div>
+                          )}
+                          {student.submitted_at && (
+                            <div className="text-xs text-orange-600 dark:text-orange-400 mt-2 pt-2 border-t border-red-200 dark:border-red-800">
+                              Submitted late: {new Date(student.submitted_at).toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Level 400 Missed Deadlines */}
+            {missedDeadlines?.level_400.length > 0 && (
+              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-red-200 dark:border-red-800 overflow-hidden">
+                <div className="bg-gradient-to-r from-red-500 via-red-600 to-orange-600 px-6 py-5">
+                  <h3 className="text-2xl font-bold text-white">Level 400 - Missed Deadlines</h3>
+                  <p className="text-red-100 text-sm mt-1">
+                    {missedDeadlines.level_400.length} student{missedDeadlines.level_400.length !== 1 ? 's' : ''} missed the deadline
+                  </p>
+                </div>
+                <div className="p-6">
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {missedDeadlines.level_400.map((student) => (
+                      <div
+                        key={student.project_id}
+                        className="border border-red-200 dark:border-red-800 rounded-lg p-4 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex-1">
+                            <Link
+                              href={`/projects/${student.project_id}`}
+                              className="font-semibold text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                            >
+                              {student.project_title}
+                            </Link>
+                          </div>
+                          <span className="px-2 py-1 text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200 rounded-full">
+                            {student.days_overdue} day{student.days_overdue !== 1 ? 's' : ''} overdue
+                          </span>
+                        </div>
+                        <div className="space-y-1 text-sm text-gray-600 dark:text-gray-400">
+                          <div className="flex items-center gap-2">
+                            <User className="h-4 w-4" />
+                            <span>{student.student_name}</span>
+                            {student.student_registration && (
+                              <span className="text-gray-500 dark:text-gray-500">
+                                ({student.student_registration})
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Mail className="h-4 w-4" />
+                            <span>{student.student_email}</span>
+                          </div>
+                          {student.study_program && (
+                            <div className="flex items-center gap-2">
+                              <BookOpen className="h-4 w-4" />
+                              <span>{student.study_program}</span>
+                            </div>
+                          )}
+                          {student.submitted_at && (
+                            <div className="text-xs text-orange-600 dark:text-orange-400 mt-2 pt-2 border-t border-red-200 dark:border-red-800">
+                              Submitted late: {new Date(student.submitted_at).toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Empty State */}
+          {missedLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600"></div>
+            </div>
+          ) : (
+            missedDeadlines?.level_200.length === 0 && 
+            missedDeadlines?.level_400.length === 0 && (
+              <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-6 text-center">
+                <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
+                <h3 className="text-lg font-semibold text-green-900 dark:text-green-100 mb-2">
+                  All Students Met Their Deadlines!
+                </h3>
+                <p className="text-green-700 dark:text-green-300">
+                  No students have missed their submission deadlines.
+                </p>
+              </div>
+            )
+          )}
+        </div>
+      )}
+
       {/* Info Card */}
       <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-6 shadow-lg">
         <div className="flex items-start gap-4">
@@ -259,6 +447,10 @@ export default function DeadlinesPage() {
               <li className="flex items-start gap-2">
                 <span className="text-blue-500 dark:text-blue-400 font-bold">•</span>
                 <span>Students cannot submit projects after the deadline has passed</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-blue-500 dark:text-blue-400 font-bold">•</span>
+                <span>The system automatically tracks students who miss deadlines</span>
               </li>
             </ul>
           </div>

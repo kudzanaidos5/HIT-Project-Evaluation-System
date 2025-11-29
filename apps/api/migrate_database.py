@@ -52,6 +52,10 @@ def migrate_database():
                 print("Adding submitted_at column to projects table...")
                 cursor.execute("ALTER TABLE projects ADD COLUMN submitted_at DATETIME")
             
+            if 'documentation_link' not in project_columns:
+                print("Adding documentation_link column to projects table...")
+                cursor.execute("ALTER TABLE projects ADD COLUMN documentation_link VARCHAR(500)")
+            
             # Check evaluations table
             cursor.execute("PRAGMA table_info(evaluations)")
             eval_columns = [row[1] for row in cursor.fetchall()]
@@ -97,11 +101,11 @@ def migrate_database():
                 cursor.execute("ALTER TABLE evaluations ADD COLUMN grade VARCHAR(5)")
             
             conn.commit()
-            print("✅ Database migration completed successfully!")
+            print("Database migration completed successfully!")
             
         except Exception as e:
             conn.rollback()
-            print(f"❌ Migration error: {e}")
+            print(f"Migration error: {e}")
             raise
         finally:
             conn.close()

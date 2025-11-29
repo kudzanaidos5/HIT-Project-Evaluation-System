@@ -1,7 +1,9 @@
 'use client'
 
-import React, { useMemo, useState } from 'react'
-import { useAuthStore } from '../lib/stores'
+import React, { useEffect, useRef, useState } from 'react'
+import { useAuthStore, useUIStore } from '../lib/stores'
+import { useStudentDashboard, useStudentProject, useUpdateProjectSubmission, useCreateMyProject, useStudyPrograms } from '../lib/hooks'
+import VerificationModal from './VerificationModal'
 
 interface StudentSection {
   id: 'dashboard' | 'submissions' | 'evaluation'
@@ -45,20 +47,261 @@ const STUDENT_SECTIONS: StudentSection[] = [
 
 export default function StudentDashboard() {
   const { user } = useAuthStore()
+  const { addNotification } = useUIStore()
   const [activeSection, setActiveSection] = useState<StudentSection['id']>('dashboard')
+  const [verificationOpen, setVerificationOpen] = useState(false)
+  const [studentAction, setStudentAction] = useState<'UPDATE_SUBMISSION' | 'CREATE_PROJECT' | null>(null)
+  const [actionProcessing, setActionProcessing] = useState(false)
+  const actionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const renderSectionContent = useMemo(() => {
-    const baseSectionHeader = (title: string, description: string, icon: React.ReactNode) => (
-      <div className="flex items-center gap-3">
-        <span className="bg-blue-100 dark:bg-blue-900/40 p-2 rounded-xl text-blue-600 dark:text-blue-300">{icon}</span>
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-white">{title}</h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{description}</p>
-        </div>
+  // Fetch dashboard data
+  const { data: dashboardData, isLoading: dashboardLoading, error: dashboardError } = useStudentDashboard()
+  const project = dashboardData?.project || null
+  // Only fetch project details if project exists
+  const { data: projectData } = useStudentProject(project?.id || null)
+  const updateSubmissionMutation = useUpdateProjectSubmission()
+  const createProjectMutation = useCreateMyProject()
+  const { data: studyProgramsData } = useStudyPrograms()
+  const studyPrograms = studyProgramsData || []
+
+  // Form state for submission
+  const [githubLink, setGithubLink] = useState('')
+  const [documentationLink, setDocumentationLink] = useState('')
+  
+  // Project creation form state
+  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [projectTitle, setProjectTitle] = useState('')
+  const [projectDescription, setProjectDescription] = useState('')
+  const [selectedStudyProgram, setSelectedStudyProgram] = useState<number | ''>('')
+  const [selectedLevel, setSelectedLevel] = useState<200 | 400 | ''>('')
+
+  // Track previous project status to detect changes
+  const prevStatusRef = useRef<string | null>(null)
+
+  // Update form state when project data loads
+  useEffect(() => {
+    if (projectData?.project?.submission) {
+      setGithubLink(projectData.project.submission.github_link || '')
+      setDocumentationLink(projectData.project.submission.documentation_link || '')
+    } else if (project) {
+      // Fallback to dashboard project data (though it doesn't have submission details)
+      setGithubLink('')
+      setDocumentationLink('')
+    } else {
+      // No project - clear form
+      setGithubLink('')
+      setDocumentationLink('')
+    }
+  }, [projectData, project])
+
+  // Detect project approval and show notification
+  useEffect(() => {
+    const currentStatus = project?.status || projectData?.project?.status
+    const previousStatus = prevStatusRef.current
+
+    // Only show notification if there's a previous status (not initial load) and status changed
+    if (previousStatus !== null && previousStatus !== currentStatus) {
+      // Check if status changed from pending_approval to draft (approved)
+      if (previousStatus === 'pending_approval' && currentStatus === 'draft') {
+        addNotification('Your project has been approved! You can now submit your repository links and documentation.', 'success', {
+          title: 'Project Approved',
+          audience: 'STUDENT',
+          userId: user?.id,  // Only show this notification to the current user
+          actionLabel: 'View project',
+          actionUrl: '/dashboard',
+        })
+      }
+    }
+
+    // Update previous status (only if current status exists)
+    if (currentStatus) {
+      prevStatusRef.current = currentStatus
+    }
+  }, [project?.status, projectData?.project?.status, addNotification, user?.id])
+
+  useEffect(() => {
+    return () => {
+      if (actionTimeoutRef.current) {
+        clearTimeout(actionTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const requestSubmissionVerification = () => {
+    setStudentAction('UPDATE_SUBMISSION')
+    setVerificationOpen(true)
+  }
+  
+  const handleCreateProject = () => {
+    if (!projectTitle.trim() || !selectedStudyProgram || !selectedLevel) {
+      addNotification('Please fill in all required fields (Title, Study Program, and Level)', 'error', {
+        title: 'Validation Error',
+        userId: user?.id,
+      })
+      return
+    }
+    
+    setStudentAction('CREATE_PROJECT')
+    setVerificationOpen(true)
+  }
+  
+  const handleCreateProjectConfirm = async () => {
+    if (!studentAction || studentAction !== 'CREATE_PROJECT') {
+      return
+    }
+    
+    // Validate required fields
+    if (!projectTitle.trim() || !selectedStudyProgram || !selectedLevel) {
+      addNotification('Please fill in all required fields', 'error', {
+        title: 'Validation Error',
+        userId: user?.id,
+      })
+      setActionProcessing(false)
+      setVerificationOpen(false)
+      setStudentAction(null)
+      return
+    }
+    
+    setActionProcessing(true)
+    
+    try {
+      await createProjectMutation.mutateAsync({
+        title: projectTitle.trim(),
+        description: projectDescription.trim() || undefined,
+        study_program_id: Number(selectedStudyProgram),
+        level: selectedLevel as 200 | 400
+      })
+      
+      addNotification('Project created successfully! It is now pending admin approval.', 'success', {
+        title: 'Project Created',
+        audience: 'STUDENT',
+        userId: user?.id,
+        actionLabel: 'View dashboard',
+        actionUrl: '/dashboard',
+      })
+      
+      setVerificationOpen(false)
+      setStudentAction(null)
+      setShowCreateForm(false)
+      setProjectTitle('')
+      setProjectDescription('')
+      setSelectedStudyProgram('')
+      setSelectedLevel('')
+    } catch (error: any) {
+      // Extract error message from various possible error formats
+      let errorMessage = 'Failed to create project'
+      if (error?.response?.data?.error) {
+        errorMessage = error.response.data.error
+      } else if (error?.response?.data?.message) {
+        errorMessage = error.response.data.message
+      } else if (error?.message) {
+        errorMessage = error.message
+      } else if (typeof error === 'string') {
+        errorMessage = error
+      }
+      
+      addNotification(`Error: ${errorMessage}`, 'error', {
+        title: 'Creation Failed',
+        userId: user?.id,
+      })
+      // Keep modal open on error so user can see the error and try again
+    } finally {
+      setActionProcessing(false)
+    }
+  }
+
+  const handleVerificationCancel = () => {
+    if (actionProcessing) return
+    setVerificationOpen(false)
+    setStudentAction(null)
+  }
+
+  const handleVerificationConfirm = async () => {
+    // Prevent multiple clicks
+    if (actionProcessing) {
+      return
+    }
+    
+    if (!studentAction) {
+      addNotification('No action specified', 'error', { title: 'Error', userId: user?.id })
+      return
+    }
+    
+    if (studentAction === 'CREATE_PROJECT') {
+      // Call handleCreateProjectConfirm which handles all the logic
+      await handleCreateProjectConfirm()
+      return
+    }
+    
+    if (studentAction === 'UPDATE_SUBMISSION' && !project?.id) {
+      addNotification('Project not found. Please refresh the page.', 'error', {
+        title: 'Error',
+        userId: user?.id,
+      })
+      return
+    }
+    setActionProcessing(true)
+
+    try {
+      await updateSubmissionMutation.mutateAsync({
+        projectId: project!.id,
+        data: {
+          github_link: githubLink,
+          documentation_link: documentationLink
+        }
+      })
+      
+      addNotification('Your submission package was updated successfully.', 'success', {
+        title: 'Submission saved',
+        audience: 'STUDENT',
+        userId: user?.id,
+        actionLabel: 'View dashboard',
+        actionUrl: '/dashboard',
+      })
+      setVerificationOpen(false)
+      setStudentAction(null)
+    } catch (error: any) {
+      addNotification(`Error: ${error.message || 'Failed to update submission'}`, 'error', {
+        title: 'Update Failed',
+        userId: user?.id,
+      })
+    } finally {
+      setActionProcessing(false)
+    }
+  }
+
+  const baseSectionHeader = (title: string, description: string, icon: React.ReactNode) => (
+    <div className="flex items-center gap-3">
+      <span className="bg-blue-100 dark:bg-blue-900/40 p-2 rounded-xl text-blue-600 dark:text-blue-300">{icon}</span>
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">{title}</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400">{description}</p>
       </div>
-    )
+    </div>
+  )
 
-    const sections: Record<StudentSection['id'], React.ReactNode> = {
+  // Get timeline data from project
+  const timeline = project?.status_timeline
+  const progressPercentage = timeline 
+    ? (timeline.evaluated?.status === 'completed' ? 100 : 
+       timeline.under_review?.status === 'current' || timeline.under_review?.status === 'completed' ? 66 : 
+       timeline.submitted?.status === 'completed' ? 33 : 0)
+    : 0
+
+  const formatDate = (dateString: string | null | undefined) => {
+    if (!dateString) return null
+    try {
+      return new Date(dateString).toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'short', 
+        day: 'numeric' 
+      })
+    } catch {
+      return null
+    }
+  }
+
+  const sectionContent: Record<StudentSection['id'], React.ReactNode> = {
       dashboard: (
         <div className="space-y-6">
           {baseSectionHeader(
@@ -69,41 +312,198 @@ export default function StudentDashboard() {
             </svg>
           )}
 
-          <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800">
-            <div className="p-8">
-              <div className="flex items-center justify-between relative">
-                <div className="absolute top-8 left-0 right-0 h-1 bg-gray-200 dark:bg-gray-700 -z-10">
-                  <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-700" style={{ width: '66%' }} />
-                </div>
-
-                {[
-                  { label: 'Submitted', status: 'completed', icon: '✓', date: 'Jan 15, 2025' },
-                  { label: 'Under Review', status: 'completed', icon: '⏱', date: 'Jan 16, 2025' },
-                  { label: 'Evaluated', status: 'current', icon: '✓', date: 'Jan 18, 2025' },
-                ].map((stage) => (
-                  <div key={stage.label} className="flex flex-col items-center gap-4 flex-1">
-                    <div
-                      className={`h-16 w-16 rounded-full flex items-center justify-center border-4 font-bold text-lg ${
-                        stage.status === 'completed'
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : stage.status === 'current'
-                            ? 'bg-white dark:bg-gray-900 border-blue-600 text-blue-600 dark:text-blue-400'
-                            : 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500'
-                      }`}
-                    >
-                      {stage.icon}
-                    </div>
-                    <div className="text-center">
-                      <p className={`text-sm font-medium ${stage.status === 'current' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400'}`}>
-                        {stage.label}
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{stage.date}</p>
-                    </div>
-                  </div>
-                ))}
+          {dashboardLoading ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
+              <div className="animate-pulse space-y-4">
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-1/2"></div>
               </div>
             </div>
-          </div>
+          ) : dashboardError ? (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-6">
+              <p className="text-red-700 dark:text-red-300">Failed to load dashboard data. Please try again.</p>
+            </div>
+          ) : !project ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
+              {!showCreateForm ? (
+                <div className="text-center">
+                  <p className="text-gray-600 dark:text-gray-400 mb-6">You don&apos;t have a project yet. Create your project to get started.</p>
+                  <button
+                    onClick={() => setShowCreateForm(true)}
+                    className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-full text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                  >
+                    <svg className="mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                    Create Project
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xl font-semibold dark:text-white">Create New Project</h3>
+                    <button
+                      onClick={() => {
+                        setShowCreateForm(false)
+                        setProjectTitle('')
+                        setProjectDescription('')
+                        setSelectedStudyProgram('')
+                        setSelectedLevel('')
+                      }}
+                      className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    >
+                      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+                        Project Title <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={projectTitle}
+                        onChange={(e) => setProjectTitle(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
+                        placeholder="Enter your project title"
+                        maxLength={200}
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+                        Description (Optional)
+                      </label>
+                      <textarea
+                        value={projectDescription}
+                        onChange={(e) => setProjectDescription(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
+                        placeholder="Describe your project..."
+                        rows={4}
+                      />
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+                          Study Program <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={selectedStudyProgram}
+                          onChange={(e) => setSelectedStudyProgram(e.target.value ? Number(e.target.value) : '')}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
+                        >
+                          <option value="">Select study program</option>
+                          {studyPrograms.map((sp: any) => (
+                            <option key={sp.id} value={sp.id}>
+                              {sp.code} - {sp.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+                          Level <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={selectedLevel}
+                          onChange={(e) => setSelectedLevel(e.target.value ? Number(e.target.value) as 200 | 400 : '')}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
+                        >
+                          <option value="">Select level</option>
+                          <option value={200}>Level 200</option>
+                          <option value={400}>Level 400</option>
+                        </select>
+                      </div>
+                    </div>
+                    
+                    <div className="flex gap-3 pt-4">
+                      <button
+                        onClick={handleCreateProject}
+                        disabled={createProjectMutation.isPending || !projectTitle.trim() || !selectedStudyProgram || !selectedLevel}
+                        className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-full font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {createProjectMutation.isPending ? 'Creating...' : 'Create Project'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowCreateForm(false)
+                          setProjectTitle('')
+                          setProjectDescription('')
+                          setSelectedStudyProgram('')
+                          setSelectedLevel('')
+                        }}
+                        className="px-4 py-3 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-full font-semibold hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800">
+              <div className="p-8">
+                <div className="flex items-center justify-between relative">
+                  <div className="absolute top-8 left-0 right-0 h-1 bg-gray-200 dark:bg-gray-700 -z-10">
+                    <div 
+                      className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-700" 
+                      style={{ width: `${progressPercentage}%` }} 
+                    />
+                  </div>
+
+                  {[
+                    { 
+                      label: 'Submitted', 
+                      stage: timeline?.submitted,
+                      icon: '✓'
+                    },
+                    { 
+                      label: 'Under Review', 
+                      stage: timeline?.under_review,
+                      icon: '⏱'
+                    },
+                    { 
+                      label: 'Evaluated', 
+                      stage: timeline?.evaluated,
+                      icon: '✓'
+                    },
+                  ].map((stageItem) => {
+                    const status = stageItem.stage?.status || 'pending'
+                    const date = formatDate(stageItem.stage?.date || null)
+                    return (
+                      <div key={stageItem.label} className="flex flex-col items-center gap-4 flex-1">
+                        <div
+                          className={`h-16 w-16 rounded-full flex items-center justify-center border-4 font-bold text-lg ${
+                            status === 'completed'
+                              ? 'bg-blue-600 border-blue-600 text-white'
+                              : status === 'current'
+                                ? 'bg-white dark:bg-gray-900 border-blue-600 text-blue-600 dark:text-blue-400'
+                                : 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500'
+                          }`}
+                        >
+                          {stageItem.icon}
+                        </div>
+                        <div className="text-center">
+                          <p className={`text-sm font-medium ${status === 'current' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400'}`}>
+                            {stageItem.label}
+                          </p>
+                          {date && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{date}</p>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       ),
       submissions: (
@@ -116,84 +516,210 @@ export default function StudentDashboard() {
             </svg>
           )}
 
-          <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800">
-            <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-800">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-xl font-semibold dark:text-white">Submission Package</h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Submit your project repository and documentation</p>
-                </div>
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                  ✓ Submitted
-                </span>
+          {dashboardLoading ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
+              <div className="animate-pulse space-y-4">
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+                <div className="h-10 bg-gray-200 dark:bg-gray-700 rounded"></div>
+                <div className="h-10 bg-gray-200 dark:bg-gray-700 rounded"></div>
               </div>
             </div>
-            <div className="px-6 py-6 space-y-6">
-              <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium dark:text-gray-200">Deadline:</span>
-                  <span className="dark:text-gray-300">2025-01-20 23:59:59</span>
+          ) : !project ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8 text-center">
+              <p className="text-gray-600 dark:text-gray-400 mb-6">You don&apos;t have a project yet. Create your project to submit your work.</p>
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-full text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+              >
+                <svg className="mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Create Project
+              </button>
+            </div>
+          ) : !projectData ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
+              <div className="animate-pulse space-y-4">
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+                <div className="h-10 bg-gray-200 dark:bg-gray-700 rounded"></div>
+                <div className="h-10 bg-gray-200 dark:bg-gray-700 rounded"></div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800">
+              <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-800">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-semibold dark:text-white">Submission Package</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Submit your project repository and documentation</p>
+                  </div>
+                  <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
+                    project.status === 'pending_approval'
+                      ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-300'
+                      : project.status === 'rejected'
+                      ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300'
+                      : project.submitted_at 
+                      ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300'
+                      : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300'
+                  }`}>
+                    {project.status === 'pending_approval' ? '⏳ Pending Approval'
+                      : project.status === 'rejected' ? '✗ Rejected'
+                      : project.submitted_at ? '✓ Submitted' : 'Pending'}
+                  </span>
                 </div>
               </div>
+              <div className="px-6 py-6 space-y-6">
+                {/* Approval Status Message */}
+                {project.status === 'pending_approval' && (
+                  <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-xl p-4">
+                    <div className="flex items-start gap-3">
+                      <svg className="h-5 w-5 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <div>
+                        <p className="text-sm font-medium text-orange-800 dark:text-orange-300">Project Pending Approval</p>
+                        <p className="text-sm text-orange-700 dark:text-orange-400 mt-1">
+                          Your project is awaiting admin approval. You will be able to submit your repository links once it is approved.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {project.status === 'rejected' && (
+                  <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl p-4">
+                    <div className="flex items-start gap-3">
+                      <svg className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      <div>
+                        <p className="text-sm font-medium text-red-800 dark:text-red-300">Project Rejected</p>
+                        <p className="text-sm text-red-700 dark:text-red-400 mt-1">
+                          Your project has been rejected. Please contact an administrator for more information.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {/* Deadline */}
+                {dashboardData?.deadlines && dashboardData.deadlines.length > 0 && (
+                  <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium dark:text-gray-200">Deadline:</span>
+                      <span className="dark:text-gray-300">
+                        {new Date(dashboardData.deadlines[0].deadline).toLocaleString('en-US', {
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                        {dashboardData.deadlines[0].days_remaining >= 0 && (
+                          <span className="ml-2 text-sm">({dashboardData.deadlines[0].days_remaining} days remaining)</span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
-              <div className="grid gap-6 md:grid-cols-2">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Project Title</label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
-                    defaultValue="E-Commerce Platform"
-                  />
+                <div className="grid gap-6 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Project Title</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
+                      value={project.title || ''}
+                      disabled
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Submission Date & Time</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-md bg-gray-50 dark:bg-gray-800 dark:text-gray-200"
+                      value={project.submitted_at 
+                        ? new Date(project.submitted_at).toLocaleString('en-US', {
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })
+                        : 'Not submitted yet'}
+                      disabled
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Submission Date & Time</label>
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-md bg-gray-50 dark:bg-gray-800 dark:text-gray-200"
-                    defaultValue="2025-01-15 14:30:00"
-                    disabled
-                  />
-                </div>
-              </div>
 
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-200">GitHub Repository Link</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
-                    defaultValue="https://github.com/student/ecommerce-project"
-                  />
-                  <button className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800 dark:text-gray-300">
-                    ↗
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-200">GitHub Repository Link</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
+                      value={githubLink}
+                      onChange={(e) => setGithubLink(e.target.value)}
+                      placeholder="https://github.com/username/repository"
+                    />
+                    {githubLink && (
+                      <a
+                        href={githubLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800 dark:text-gray-300 transition-colors"
+                      >
+                        ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Google Drive Documentation Link</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
+                      value={documentationLink}
+                      onChange={(e) => setDocumentationLink(e.target.value)}
+                      placeholder="https://docs.google.com/document/d/..."
+                    />
+                    {documentationLink && (
+                      <a
+                        href={documentationLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800 dark:text-gray-300 transition-colors"
+                      >
+                        ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <button
+                    className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-full font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={requestSubmissionVerification}
+                    disabled={
+                      updateSubmissionMutation.isPending || 
+                      actionProcessing || 
+                      project.status === 'pending_approval' || 
+                      project.status === 'rejected'
+                    }
+                    title={
+                      project.status === 'pending_approval' 
+                        ? 'Project must be approved before submission'
+                        : project.status === 'rejected'
+                        ? 'Project has been rejected'
+                        : undefined
+                    }
+                  >
+                    {updateSubmissionMutation.isPending || actionProcessing ? 'Updating...' : '✓ Update Submission'}
                   </button>
                 </div>
               </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Google Drive Documentation Link</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
-                    defaultValue="https://docs.google.com/document/d/14mdXfcRHjgVoNkOFrC_w0NyJtclxGJBlyeoHUPE61Mg/edit?tab=t.0"
-                  />
-                  <button className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800 dark:text-gray-300">
-                    ↗
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex gap-3 pt-4">
-                <button className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-full font-semibold hover:bg-blue-700 transition-colors">
-                  ✓ Update Submission
-                </button>
-                <button className="px-4 py-3 border border-gray-300 dark:border-gray-700 rounded-full hover:bg-gray-50 dark:hover:bg-gray-800 dark:text-gray-300 transition-colors">
-                  View Submission
-                </button>
-              </div>
             </div>
-          </div>
+          )}
         </div>
       ),
       evaluation: (
@@ -206,80 +732,142 @@ export default function StudentDashboard() {
             </svg>
           )}
 
-          <div className="bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-900/30 dark:to-purple-900/30 border-2 border-blue-200 dark:border-blue-800 shadow-xl rounded-2xl p-6">
-            <h3 className="text-xl font-semibold mb-4 dark:text-white">Overall Performance</h3>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <p className="text-sm text-gray-600 dark:text-gray-400">Total Marks</p>
-                <p className="text-4xl font-bold text-blue-600">87/100</p>
-              </div>
-              <div className="text-right">
-                <p className="text-sm text-gray-600 dark:text-gray-400">Percentage</p>
-                <p className="text-4xl font-bold text-blue-600">87%</p>
+          {dashboardLoading ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
+              <div className="animate-pulse space-y-4">
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+                <div className="h-10 bg-gray-200 dark:bg-gray-700 rounded"></div>
               </div>
             </div>
-            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-4">
-              <div className="bg-blue-600 h-4 rounded-full" style={{ width: '87%' }}></div>
+          ) : !project ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8 text-center">
+              <p className="text-gray-600 dark:text-gray-400 mb-6">You don&apos;t have a project yet. Create your project to submit your work.</p>
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-full text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+              >
+                <svg className="mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Create Project
+              </button>
             </div>
-          </div>
+          ) : !projectData ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
+              <div className="animate-pulse space-y-4">
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+                <div className="h-10 bg-gray-200 dark:bg-gray-700 rounded"></div>
+              </div>
+            </div>
+          ) : !projectData?.evaluation ? (
+            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8 text-center">
+              <p className="text-gray-600 dark:text-gray-400">
+                {project?.status === 'evaluated' 
+                  ? 'Evaluation is being processed. Please check back later.'
+                  : 'Your project has not been evaluated yet. Evaluation results will appear here once your project is reviewed.'}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-900/30 dark:to-purple-900/30 border-2 border-blue-200 dark:border-blue-800 shadow-xl rounded-2xl p-6">
+                <h3 className="text-xl font-semibold mb-4 dark:text-white">Overall Performance</h3>
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Total Marks</p>
+                    <p className="text-4xl font-bold text-blue-600 dark:text-blue-400">
+                      {Math.round(projectData.evaluation.total_score || 0)}/{projectData.evaluation.max_score || 100}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Percentage</p>
+                    <p className="text-4xl font-bold text-blue-600 dark:text-blue-400">
+                      {Math.round(projectData.evaluation.percentage || 0)}%
+                    </p>
+                  </div>
+                </div>
+                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-4">
+                  <div 
+                    className="bg-blue-600 h-4 rounded-full transition-all duration-500" 
+                    style={{ width: `${Math.min(projectData.evaluation.percentage || 0, 100)}%` }}
+                  ></div>
+                </div>
+                {projectData.evaluation.overall_feedback && (
+                  <div className="mt-4 p-4 bg-white/50 dark:bg-gray-800/50 rounded-lg">
+                    <p className="text-sm text-gray-700 dark:text-gray-300">{projectData.evaluation.overall_feedback}</p>
+                  </div>
+                )}
+              </div>
 
-          <div className="grid gap-6 md:grid-cols-2">
-            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border-2 border-blue-200 dark:border-blue-800">
-              <div className="px-6 py-4 bg-blue-100 dark:bg-blue-900/40 border-b border-blue-200 dark:border-blue-700">
-                <h3 className="font-semibold dark:text-white text-blue-900 dark:text-blue-200">Project Marks</h3>
-              </div>
-              <div className="px-6 py-4 space-y-4 bg-blue-50/50 dark:bg-blue-900/10">
-                {[
-                  { component: 'Code Quality', marks: 18, total: 20 },
-                  { component: 'Documentation', marks: 15, total: 20 },
-                  { component: 'Functionality', marks: 28, total: 30 },
-                ].map((item) => (
-                  <div key={item.component} className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="font-medium dark:text-gray-200">{item.component}</span>
-                      <span className="font-semibold text-blue-700 dark:text-blue-300">
-                        {item.marks}/{item.total}
-                      </span>
+              <div className="grid gap-6 md:grid-cols-2">
+                {/* Project Marks */}
+                {projectData.evaluation.marks?.project_marks && Object.keys(projectData.evaluation.marks.project_marks).length > 0 && (
+                  <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border-2 border-blue-200 dark:border-blue-800">
+                    <div className="px-6 py-4 bg-blue-100 dark:bg-blue-900/40 border-b border-blue-200 dark:border-blue-700">
+                      <h3 className="font-semibold text-blue-900 dark:text-blue-200">Project Marks</h3>
                     </div>
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                      <div className="bg-blue-600 h-2 rounded-full" style={{ width: `${(item.marks / item.total) * 100}%` }}></div>
+                    <div className="px-6 py-4 space-y-4 bg-blue-50/50 dark:bg-blue-900/10">
+                      {Object.entries(projectData.evaluation.marks.project_marks).map(([key, mark]: [string, any]) => (
+                        <div key={key} className="space-y-2">
+                          <div className="flex justify-between text-sm">
+                            <span className="font-medium dark:text-gray-200">
+                              {key.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}
+                            </span>
+                            <span className="font-semibold text-blue-700 dark:text-blue-300">
+                              {mark.score}/{mark.max_score}
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                            <div 
+                              className="bg-blue-600 h-2 rounded-full" 
+                              style={{ width: `${Math.min((mark.score / mark.max_score) * 100, 100)}%` }}
+                            ></div>
+                          </div>
+                          {mark.feedback && (
+                            <p className="text-xs text-gray-600 dark:text-gray-400 italic">{mark.feedback}</p>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
+                )}
 
-            <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border-2 border-purple-200 dark:border-purple-800">
-              <div className="px-6 py-4 bg-purple-100 dark:bg-purple-900/40 border-b border-purple-200 dark:border-purple-700">
-                <h3 className="font-semibold dark:text-white text-purple-900 dark:text-purple-200">Presentation Marks</h3>
-              </div>
-              <div className="px-6 py-4 space-y-4 bg-purple-50/50 dark:bg-purple-900/10">
-                {[
-                  { component: 'Clarity & Communication', marks: 9, total: 10 },
-                  { component: 'Visual Presentation', marks: 8, total: 10 },
-                  { component: 'Technical Explanation', marks: 9, total: 10 },
-                ].map((item) => (
-                  <div key={item.component} className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="font-medium dark:text-gray-200">{item.component}</span>
-                      <span className="font-semibold text-purple-700 dark:text-purple-300">
-                        {item.marks}/{item.total}
-                      </span>
+                {/* Presentation Marks */}
+                {projectData.evaluation.marks?.presentation_marks && Object.keys(projectData.evaluation.marks.presentation_marks).length > 0 && (
+                  <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border-2 border-purple-200 dark:border-purple-800">
+                    <div className="px-6 py-4 bg-purple-100 dark:bg-purple-900/40 border-b border-purple-200 dark:border-purple-700">
+                      <h3 className="font-semibold text-purple-900 dark:text-purple-200">Presentation Marks</h3>
                     </div>
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                      <div className="bg-purple-600 h-2 rounded-full" style={{ width: `${(item.marks / item.total) * 100}%` }}></div>
+                    <div className="px-6 py-4 space-y-4 bg-purple-50/50 dark:bg-purple-900/10">
+                      {Object.entries(projectData.evaluation.marks.presentation_marks).map(([key, mark]: [string, any]) => (
+                        <div key={key} className="space-y-2">
+                          <div className="flex justify-between text-sm">
+                            <span className="font-medium dark:text-gray-200">
+                              {key.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}
+                            </span>
+                            <span className="font-semibold text-purple-700 dark:text-purple-300">
+                              {mark.score}/{mark.max_score}
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                            <div 
+                              className="bg-purple-600 h-2 rounded-full" 
+                              style={{ width: `${Math.min((mark.score / mark.max_score) * 100, 100)}%` }}
+                            ></div>
+                          </div>
+                          {mark.feedback && (
+                            <p className="text-xs text-gray-600 dark:text-gray-400 italic">{mark.feedback}</p>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
+                )}
               </div>
-            </div>
-          </div>
+            </>
+          )}
         </div>
       ),
     }
-
-    return sections
-  }, [])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 dark:from-gray-900 dark:to-gray-800">
@@ -294,16 +882,6 @@ export default function StudentDashboard() {
                     Welcome back, {user?.name}! Track your submission, upload any missing details, and review evaluation feedback from one place.
                     </p>
                 </div>
-                {/* <div className="w-full lg:w-auto">
-                    <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-gray-900 dark:via-gray-900 dark:to-gray-800 p-4 shadow-inner">
-                    <p className="text-xs uppercase tracking-widest text-gray-500 dark:text-gray-400">Signed in as</p>
-                    <p className="text-lg font-semibold text-gray-900 dark:text-white">{user?.name}</p>
-                    <p className="text-sm text-blue-600 dark:text-blue-300">{user?.email}</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                        Notifications are enabled — you'll be alerted once evaluators publish feedback.
-                    </p>
-                    </div>
-                </div> */}
             </div>
           </header>
 
@@ -357,9 +935,32 @@ export default function StudentDashboard() {
             </div>
           </div>
 
-          <div className="pt-4">{renderSectionContent[activeSection]}</div>
+          <div className="pt-4">{sectionContent[activeSection]}</div>
         </div>
       </div>
+
+      <VerificationModal
+        open={verificationOpen}
+        title={studentAction === 'CREATE_PROJECT' ? "Confirm project creation" : "Confirm submission update"}
+        description={studentAction === 'CREATE_PROJECT' 
+          ? "Please review your project details before creating. You can only have one project."
+          : "Make sure your repository and documentation links are correct before updating your package."}
+        highlight={studentAction === 'CREATE_PROJECT'
+          ? `Title: ${projectTitle || 'N/A'}\nStudy Program: ${studyPrograms.find((sp: any) => sp.id === selectedStudyProgram)?.name || 'N/A'}\nLevel: ${selectedLevel || 'N/A'}`
+          : "Updating a submission notifies evaluators and replaces previously attached details."}
+        confirmLabel={studentAction === 'CREATE_PROJECT' ? "Yes, create project" : "Yes, update submission"}
+        cancelLabel="Cancel"
+        tone="info"
+        loading={actionProcessing || createProjectMutation.isPending}
+        onConfirm={() => {
+          // Ensure handler is called
+          handleVerificationConfirm().catch((err) => {
+            console.error('Error in verification confirm:', err)
+            addNotification('An unexpected error occurred', 'error', { title: 'Error', userId: user?.id })
+          })
+        }}
+        onCancel={handleVerificationCancel}
+      />
     </div>
   )
 }

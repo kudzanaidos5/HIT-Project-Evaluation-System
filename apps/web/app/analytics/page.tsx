@@ -68,7 +68,9 @@ export default function AnalyticsPage() {
 
   // Prepare chart data
   const performanceChartData = {
-    labels: performanceByStudyProgram?.map((item: any) => item.study_program_name) || [],
+    labels: performanceByStudyProgram?.map((item: any) => 
+      item.level ? `${item.study_program_name} (Level ${item.level})` : item.study_program_name
+    ) || [],
     datasets: [
       {
         label: 'Average Score (%)',

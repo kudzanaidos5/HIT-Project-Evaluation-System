@@ -1,6 +1,6 @@
 'use client'
 
-import React from 'react'
+import React, { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuthStore } from '../../lib/stores'
 import { useDashboardData, useProjects } from '../../lib/hooks'
@@ -16,12 +16,26 @@ export default function DashboardPage() {
   
   // Determine which projects to show based on role
   const isAdmin = user?.role === 'ADMIN'
-  const projects = isAdmin ? allProjects : (projectsData || [])
+  const allProjectsList = isAdmin ? allProjects : (projectsData || [])
+  
+  // Sort projects by most recent (created_at descending) for Recent Projects
+  const recentProjects = useMemo(() => {
+    if (!allProjectsList || !Array.isArray(allProjectsList)) return []
+    const sorted = [...allProjectsList].sort((a: any, b: any) => {
+      const dateA = new Date(a.created_at || 0).getTime()
+      const dateB = new Date(b.created_at || 0).getTime()
+      return dateB - dateA // Descending order (most recent first)
+    })
+    return sorted.slice(0, 5) // Get top 5 most recent
+  }, [allProjectsList])
   
   // Calculate stats from real data
-  const totalProjects = projects?.length || 0
-  const evaluatedProjects = projects?.filter((p: any) => p.status === 'evaluated').length || 0
-  const pendingProjects = projects?.filter((p: any) => p.status === 'pending').length || 0
+  const totalProjects = allProjectsList?.length || 0
+  const evaluatedProjects = allProjectsList?.filter((p: any) => p.status === 'evaluated').length || 0
+  // Pending = all projects that are not evaluated (matches the badge display logic)
+  const pendingProjects = allProjectsList?.filter((p: any) => 
+    p.status !== 'evaluated' && p.status !== 'rejected'
+  ).length || 0
   const averageScore = averages?.average_score || 0
   
   const isLoading = dashboardLoading || projectsLoading
@@ -184,9 +198,9 @@ export default function DashboardPage() {
                     </div>
                   ))}
                 </div>
-              ) : projects && projects.length > 0 ? (
+              ) : recentProjects && recentProjects.length > 0 ? (
                 <div className="space-y-3">
-                  {projects.slice(0, 5).map((project: any) => (
+                  {recentProjects.map((project: any) => (
                     <div key={project.id} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
                       <div>
                         <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{project.title}</p>
@@ -224,15 +238,6 @@ export default function DashboardPage() {
               <div className="space-y-3">
                 {isAdmin ? (
                   <>
-                    <button 
-                      onClick={() => router.push('/evaluation')}
-                      className="w-full flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                    >
-                      <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                      </svg>
-                      New Evaluation
-                    </button>
                     <button 
                       onClick={() => router.push('/projects')}
                       className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 dark:border-gray-600 text-sm font-medium rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"

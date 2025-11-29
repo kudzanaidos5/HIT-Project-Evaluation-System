@@ -1,16 +1,28 @@
 'use client'
 
 import React, { useState, useMemo } from 'react'
-import { useProjects } from '../../lib/hooks'
-import { useThemeStore } from '../../lib/stores'
+import { useProjects, useApproveProject, useRejectProject } from '../../lib/hooks'
+import { useThemeStore, useAuthStore, useUIStore } from '../../lib/stores'
 import Link from 'next/link'
+import ConfirmDialog from '../../components/ConfirmDialog'
 
 export default function ProjectsPage() {
   const { isDarkMode } = useThemeStore()
+  const { user } = useAuthStore()
+  const { addNotification } = useUIStore()
+  const isAdmin = user?.role === 'ADMIN'
+  const approveProjectMutation = useApproveProject()
+  const rejectProjectMutation = useRejectProject()
+  
   const [searchTerm, setSearchTerm] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'evaluated'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'pending_approval' | 'evaluated'>('all')
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
+  const [projectToReject, setProjectToReject] = useState<number | null>(null)
+  const [rejectionReason, setRejectionReason] = useState('')
   const [levelFilter, setLevelFilter] = useState<'all' | '200' | '400'>('all')
   const [studyProgramFilter, setStudyProgramFilter] = useState<string>('all')
+  const [sortBy, setSortBy] = useState<'title' | 'student_name' | 'status' | 'created_at'>('created_at')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
   const { data: projectsData, isLoading, error } = useProjects({
     search: searchTerm || undefined,
@@ -18,8 +30,42 @@ export default function ProjectsPage() {
     level: levelFilter !== 'all' ? levelFilter : undefined,
     study_program_id: studyProgramFilter !== 'all' ? studyProgramFilter : undefined,
   })
-
-  const projects = projectsData?.projects || projectsData || []
+  
+  // Sort projects
+  const projects = useMemo(() => {
+    const projectsDataRaw = projectsData?.projects || projectsData || []
+    const sorted = [...projectsDataRaw]
+    sorted.sort((a: any, b: any) => {
+      let aValue: any
+      let bValue: any
+      
+      switch (sortBy) {
+        case 'title':
+          aValue = a.title?.toLowerCase() || ''
+          bValue = b.title?.toLowerCase() || ''
+          break
+        case 'student_name':
+          aValue = a.student_name?.toLowerCase() || ''
+          bValue = b.student_name?.toLowerCase() || ''
+          break
+        case 'status':
+          aValue = a.status || ''
+          bValue = b.status || ''
+          break
+        case 'created_at':
+          aValue = new Date(a.created_at || 0).getTime()
+          bValue = new Date(b.created_at || 0).getTime()
+          break
+        default:
+          return 0
+      }
+      
+      if (aValue < bValue) return sortOrder === 'asc' ? -1 : 1
+      if (aValue > bValue) return sortOrder === 'asc' ? 1 : -1
+      return 0
+    })
+    return sorted
+  }, [projectsData, sortBy, sortOrder])
 
   if (error) {
     return (
@@ -54,7 +100,7 @@ export default function ProjectsPage() {
 
       {/* Filters and Search */}
       <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div>
             <label htmlFor="search" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Search
@@ -76,10 +122,11 @@ export default function ProjectsPage() {
             <select
               id="status"
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as 'all' | 'pending' | 'evaluated')}
+              onChange={(e) => setStatusFilter(e.target.value as 'all' | 'pending' | 'pending_approval' | 'evaluated')}
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="all">All Status</option>
+              <option value="pending_approval">Pending Approval</option>
               <option value="pending">Pending</option>
               <option value="evaluated">Evaluated</option>
             </select>
@@ -119,6 +166,32 @@ export default function ProjectsPage() {
             </select>
           </div>
           
+          <div>
+            <label htmlFor="sort_by" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Sort By
+            </label>
+            <div className="flex gap-2">
+              <select
+                id="sort_by"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as 'title' | 'student_name' | 'status' | 'created_at')}
+                className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="created_at">Date Created</option>
+                <option value="title">Title</option>
+                <option value="student_name">Student Name</option>
+                <option value="status">Status</option>
+              </select>
+              <button
+                onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                title={sortOrder === 'asc' ? 'Sort Descending' : 'Sort Ascending'}
+              >
+                {sortOrder === 'asc' ? '↑' : '↓'}
+              </button>
+            </div>
+          </div>
+          
           <div className="flex items-end">
             <button
               onClick={() => {
@@ -126,6 +199,8 @@ export default function ProjectsPage() {
                 setStatusFilter('all')
                 setLevelFilter('all')
                 setStudyProgramFilter('all')
+                setSortBy('created_at')
+                setSortOrder('desc')
               }}
               className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
@@ -180,10 +255,17 @@ export default function ProjectsPage() {
                       <h4 className="text-lg font-medium text-gray-900 dark:text-gray-100">{project.title}</h4>
                       <span className={`ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                         project.status === 'evaluated' 
-                          ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400' 
+                          ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400'
+                          : project.status === 'pending_approval'
+                          ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-400'
+                          : project.status === 'rejected'
+                          ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-400'
                           : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-400'
                       }`}>
-                        {project.status === 'evaluated' ? 'Evaluated' : 'Pending'}
+                        {project.status === 'evaluated' ? 'Evaluated' 
+                          : project.status === 'pending_approval' ? 'Pending Approval'
+                          : project.status === 'rejected' ? 'Rejected'
+                          : 'Pending'}
                       </span>
                     </div>
                     <div className="mt-2 text-sm text-gray-600 dark:text-gray-400">
@@ -209,6 +291,34 @@ export default function ProjectsPage() {
                     >
                       View Details
                     </Link>
+                    {isAdmin && project.status === 'pending_approval' && (
+                      <>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await approveProjectMutation.mutateAsync(project.id)
+                              addNotification('Project approved successfully!', 'success', { title: 'Success' })
+                            } catch (error: any) {
+                              addNotification(`Error: ${error.response?.data?.error || error.message || 'Failed to approve project'}`, 'error', { title: 'Error' })
+                            }
+                          }}
+                          disabled={approveProjectMutation.isPending}
+                          className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {approveProjectMutation.isPending ? 'Approving...' : 'Approve'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setProjectToReject(project.id)
+                            setRejectDialogOpen(true)
+                          }}
+                          disabled={rejectProjectMutation.isPending}
+                          className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
                     {project.status === 'pending' && (
                       <Link
                         href={`/evaluation?projectId=${project.id}`}
@@ -250,6 +360,49 @@ export default function ProjectsPage() {
           </div>
         )}
       </div>
+
+      {/* Reject Project Dialog */}
+      <ConfirmDialog
+        isOpen={rejectDialogOpen}
+        onClose={() => {
+          setRejectDialogOpen(false)
+          setProjectToReject(null)
+          setRejectionReason('')
+        }}
+        onConfirm={async () => {
+          if (!projectToReject) return
+          try {
+            await rejectProjectMutation.mutateAsync({ id: projectToReject, reason: rejectionReason || undefined })
+            addNotification('Project rejected successfully!', 'success', { title: 'Success' })
+            setRejectDialogOpen(false)
+            setProjectToReject(null)
+            setRejectionReason('')
+          } catch (error: any) {
+            addNotification(`Error: ${error.response?.data?.error || error.message || 'Failed to reject project'}`, 'error', { title: 'Error' })
+          }
+        }}
+        title="Reject Project"
+        message={
+          <div>
+            <p className="mb-4">Are you sure you want to reject this project?</p>
+            <label htmlFor="rejection-reason" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Rejection Reason (optional)
+            </label>
+            <textarea
+              id="rejection-reason"
+              value={rejectionReason}
+              onChange={(e) => setRejectionReason(e.target.value)}
+              placeholder="Enter reason for rejection..."
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              rows={3}
+            />
+          </div>
+        }
+        confirmText="Reject"
+        cancelText="Cancel"
+        confirmButtonStyle="danger"
+        isLoading={rejectProjectMutation.isPending}
+      />
     </div>
   )
 }

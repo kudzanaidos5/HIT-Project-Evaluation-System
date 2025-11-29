@@ -1,10 +1,11 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import NotificationsDropdown from '../components/NotificationsDropdown'
 import { useAuthStore, useUIStore, useThemeStore, NotificationItem } from '../lib/stores'
+import { useChangePassword } from '../lib/hooks'
 
 // Live Date and Time Component
 const LiveDateTime = () => {
@@ -85,6 +86,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
         read: false,
         actionLabel: 'Open queue',
         actionUrl: '/projects/pending',
+        audience: 'ADMIN',
       },
       {
         id: 'admin-2',
@@ -95,6 +97,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
         read: false,
         actionLabel: 'Review timeline',
         actionUrl: '/deadlines',
+        audience: 'ADMIN',
       },
       {
         id: 'admin-3',
@@ -105,6 +108,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
         read: true,
         actionLabel: 'View analytics',
         actionUrl: '/analytics',
+        audience: 'ADMIN',
       },
     ]
   }
@@ -119,6 +123,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
       read: false,
       actionLabel: 'View feedback',
       actionUrl: '/dashboard',
+      audience: 'STUDENT',
     },
     {
       id: 'student-2',
@@ -129,6 +134,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
       read: false,
       actionLabel: 'Update submission',
       actionUrl: '/projects',
+      audience: 'STUDENT',
     },
     {
       id: 'student-3',
@@ -139,8 +145,202 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
       read: true,
       actionLabel: 'Go to dashboard',
       actionUrl: '/dashboard',
+      audience: 'STUDENT',
     },
   ]
+}
+
+// Account Management Menu Item Component
+function AccountManagementMenuItem({ onClose }: { onClose: () => void }) {
+  const { user } = useAuthStore()
+  const { addNotification } = useUIStore()
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [showPasswordForm, setShowPasswordForm] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const changePasswordMutation = useChangePassword()
+
+  const handleOpenModal = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    console.log('Account Settings clicked, opening modal') // Debug log
+    setIsModalOpen(true)
+    console.log('Modal state set to:', true, 'isModalOpen:', isModalOpen) // Debug log
+    onClose()
+  }
+
+  const handleChangePassword = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      addNotification('Please fill in all password fields', 'error', { title: 'Validation Error', userId: user?.id })
+      return
+    }
+
+    if (newPassword.length < 6) {
+      addNotification('New password must be at least 6 characters long', 'error', { title: 'Validation Error', userId: user?.id })
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      addNotification('New passwords do not match', 'error', { title: 'Validation Error', userId: user?.id })
+      return
+    }
+
+    try {
+      await changePasswordMutation.mutateAsync({ currentPassword, newPassword })
+      addNotification('Password changed successfully!', 'success', { title: 'Success', userId: user?.id })
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setShowPasswordForm(false)
+    } catch (error: any) {
+      const errorMessage = error?.response?.data?.error || error?.message || 'Failed to change password'
+      addNotification(errorMessage, 'error', { title: 'Error', userId: user?.id })
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onMouseDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          handleOpenModal(e as any)
+        }}
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          handleOpenModal(e)
+        }}
+        className="w-full flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+      >
+        <svg className="mr-3 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        Account Settings
+      </button>
+
+      {isModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}>
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <div className="p-6 border-b border-gray-200 dark:border-gray-800">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Account Management</h2>
+                    <button
+                      onClick={() => setIsModalOpen(false)}
+                      className="p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                    >
+                      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-6 space-y-6">
+                  {/* Account Info */}
+                  <div className="space-y-4">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Account Information</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Name</label>
+                        <div className="mt-1 text-base text-gray-900 dark:text-white">{user?.name}</div>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Email</label>
+                        <div className="mt-1 text-base text-gray-900 dark:text-white">{user?.email}</div>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Role</label>
+                        <div className="mt-1">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                            {user?.role}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Password Change */}
+                  {!user?.is_oauth_user && (
+                    <div className="space-y-4 border-t border-gray-200 dark:border-gray-800 pt-6">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Change Password</h3>
+                        <button
+                          onClick={() => setShowPasswordForm(!showPasswordForm)}
+                          className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
+                        >
+                          {showPasswordForm ? 'Cancel' : 'Change Password'}
+                        </button>
+                      </div>
+
+                      {showPasswordForm && (
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                              Current Password
+                            </label>
+                            <input
+                              type="password"
+                              value={currentPassword}
+                              onChange={(e) => setCurrentPassword(e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              placeholder="Enter current password"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                              New Password
+                            </label>
+                            <input
+                              type="password"
+                              value={newPassword}
+                              onChange={(e) => setNewPassword(e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              placeholder="Enter new password (min. 6 characters)"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                              Confirm New Password
+                            </label>
+                            <input
+                              type="password"
+                              value={confirmPassword}
+                              onChange={(e) => setConfirmPassword(e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              placeholder="Confirm new password"
+                            />
+                          </div>
+                          <button
+                            onClick={handleChangePassword}
+                            disabled={changePasswordMutation.isPending}
+                            className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {changePasswordMutation.isPending ? 'Changing...' : 'Change Password'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {user?.is_oauth_user && (
+                    <div className="border-t border-gray-200 dark:border-gray-800 pt-6">
+                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                        <p className="text-sm text-blue-800 dark:text-blue-200">
+                          You signed in with Google. Password changes are managed through your Google account.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+        </div>
+      )}
+    </>
+  )
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -165,6 +365,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const notificationsRef = useRef<HTMLDivElement | null>(null)
+  const userMenuRef = useRef<HTMLDivElement | null>(null)
+  const lastRoleRef = useRef<'ADMIN' | 'STUDENT' | null>(null)
 
   // Wrapper functions to auto-expand sidebar when clicking Projects or Settings
   const handleProjectsToggle = () => {
@@ -196,21 +398,34 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // Close user menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (userMenuOpen) {
+      if (userMenuOpen && userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
         setUserMenuOpen(false)
       }
     }
     
     if (userMenuOpen) {
-      document.addEventListener('click', handleClickOutside)
+      // Use a small delay to allow button clicks to register first
+      setTimeout(() => {
+        document.addEventListener('click', handleClickOutside)
+      }, 0)
       return () => document.removeEventListener('click', handleClickOutside)
     }
   }, [userMenuOpen])
 
   useEffect(() => {
-    if (!user) return
-    if (notifications.length > 0) return
-    setNotifications(buildDefaultNotifications(user.role))
+    if (!user) {
+      if (notifications.length) {
+        setNotifications([])
+      }
+      lastRoleRef.current = null
+      return
+    }
+
+    const roleChanged = lastRoleRef.current !== user.role
+    if (roleChanged || notifications.length === 0) {
+      setNotifications(buildDefaultNotifications(user.role))
+      lastRoleRef.current = user.role
+    }
   }, [notifications.length, setNotifications, user])
 
   useEffect(() => {
@@ -238,7 +453,31 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const unreadNotificationCount = notifications.filter((notification) => !notification.read).length
+  const handleMarkVisibleNotificationsRead = () => {
+    scopedNotifications.forEach((notification) => {
+      if (!notification.read) {
+        markNotificationRead(notification.id)
+      }
+    })
+    setNotificationsOpen(false)
+  }
+
+  const scopedNotifications = useMemo(() => {
+    if (!user?.role) return []
+    return notifications.filter((notification) => {
+      // If notification has a specific userId, only show it to that user
+      if (notification.userId !== undefined) {
+        return notification.userId === user.id
+      }
+      
+      // Otherwise, filter by audience/role
+      const audience = notification.audience || 'ALL'
+      if (audience === 'ALL') return true
+      return audience === user.role
+    })
+  }, [notifications, user?.role, user?.id])
+
+  const unreadNotificationCount = scopedNotifications.filter((notification) => !notification.read).length
 
   // Allow direct access to pages without login
   if (pathname === '/login') {
@@ -328,18 +567,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 </button>
                 {notificationsOpen && (
                   <NotificationsDropdown
-                    notifications={notifications}
+                    notifications={scopedNotifications}
                     onSelect={handleNotificationSelect}
-                    onMarkAllRead={() => {
-                      markAllNotificationsRead()
-                      setNotificationsOpen(false)
-                    }}
+                    onMarkAllRead={handleMarkVisibleNotificationsRead}
                   />
                 )}
               </div>
                 
                 {/* User profile with dropdown menu */}
-              <div className="relative">
+              <div className="relative" ref={userMenuRef}>
                 <button 
                   onClick={(e) => {
                     e.stopPropagation()
@@ -363,12 +599,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 {userMenuOpen && (
                   <div 
                     className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 z-50"
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div className="px-4 py-2 border-b border-gray-100 dark:border-gray-700">
                       <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{user?.name}</p>
                       <p className="text-xs text-gray-500 dark:text-gray-400">{user?.email}</p>
                 </div>
+                <AccountManagementMenuItem onClose={() => setUserMenuOpen(false)} />
                 <button 
                   onClick={handleLogout}
                       className="w-full flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
@@ -474,22 +712,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 )}
               </div>
 
-              {/* 3. Evaluation */}
-              <Link 
-                href="/evaluation" 
-                className={`group flex items-center ${sidebarExpanded ? 'px-3 py-2.5' : 'px-2 py-2 justify-center'} text-sm font-medium rounded-lg transition-all mt-2 ${
-                  pathname === '/evaluation' 
-                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md' 
-                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
-                }`}
-              >
-                <svg className={`${sidebarExpanded ? 'mr-3' : ''} h-6 w-6 ${pathname === '/evaluation' ? 'text-white' : 'text-gray-400 dark:text-gray-500 group-hover:text-gray-600 dark:group-hover:text-gray-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-                {sidebarExpanded && 'New Evaluation'}
-              </Link>
-
-              {/* 4. Deadlines */}
+              {/* 3. Deadlines */}
               <Link 
                 href="/deadlines" 
                 className={`group flex items-center ${sidebarExpanded ? 'px-3 py-2.5' : 'px-2 py-2 justify-center'} text-sm font-medium rounded-lg transition-all mt-2 ${

@@ -4,6 +4,7 @@ from enum import Enum
 from flask_bcrypt import Bcrypt
 import re
 from sqlalchemy.orm import validates
+from sqlalchemy import event
 
 bcrypt = Bcrypt()
 
@@ -18,6 +19,14 @@ class ProjectLevel(Enum):
 class EvaluationType(Enum):
     PROJECT = "PROJECT"  # Code quality, documentation, functionality
     PRESENTATION = "PRESENTATION"  # Clarity & communication, visual presentation, technical explanation
+
+class ProjectStatus(Enum):
+    PENDING_APPROVAL = "pending_approval"  # Created by student, awaiting admin approval
+    DRAFT = "draft"           # Approved but not submitted
+    SUBMITTED = "submitted"   # Student has submitted links
+    UNDER_REVIEW = "under_review"  # Being evaluated
+    EVALUATED = "evaluated"   # Fully evaluated
+    REJECTED = "rejected"     # Rejected by admin
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -52,7 +61,7 @@ class User(db.Model):
         return bcrypt.check_password_hash(self.password_hash, password)
     
     def to_dict(self):
-        return {
+        result = {
             'id': self.id,
             'name': self.name,
             'email': self.email,
@@ -60,6 +69,35 @@ class User(db.Model):
             'is_oauth_user': self.is_oauth_user,
             'created_at': self.created_at.isoformat()
         }
+        # Include student profile if it exists
+        try:
+            # Access student_profile in a safe way
+            student_profile = getattr(self, 'student_profile', None)
+            if student_profile:
+                result['student_profile'] = {
+                    'id': student_profile.id,
+                    'student_id': student_profile.student_id,
+                    'department': student_profile.department
+                }
+                # Count projects for this student
+                from .models import Project
+                result['project_count'] = Project.query.filter_by(student_id=student_profile.id).count()
+        except Exception:
+            # If there's an issue accessing student_profile, just skip it
+            pass
+        
+        # Count evaluations created by this user (if admin)
+        try:
+            from .models import Evaluation
+            result['evaluation_count'] = Evaluation.query.filter_by(admin_id=self.id).count()
+        except Exception:
+            result['evaluation_count'] = 0
+        
+        # Set default project_count if not set
+        if 'project_count' not in result:
+            result['project_count'] = 0
+            
+        return result
 
 class Student(db.Model):
     __tablename__ = 'students'
@@ -113,10 +151,11 @@ class Project(db.Model):
     level = db.Column(db.Enum(ProjectLevel), nullable=False)
     study_program_id = db.Column(db.Integer, db.ForeignKey('study_programs.id'), nullable=False)
     student_id = db.Column(db.Integer, db.ForeignKey('students.id'), nullable=False)
-    status = db.Column(db.String(50), default='pending')
+    status = db.Column(db.Enum(ProjectStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=ProjectStatus.DRAFT)
     
     # Submission fields
     github_link = db.Column(db.String(500), nullable=True)
+    documentation_link = db.Column(db.String(500), nullable=True)  # Google Drive or other documentation links
     pdf_path = db.Column(db.String(500), nullable=True)
     submitted_at = db.Column(db.DateTime, nullable=True)
     
@@ -125,6 +164,16 @@ class Project(db.Model):
     
     # Relationships
     evaluations = db.relationship('Evaluation', backref='project', lazy='dynamic', cascade='all, delete-orphan')
+    
+    @property
+    def status_value(self):
+        """Get status as string value, handling both enum and string"""
+        if isinstance(self.status, ProjectStatus):
+            return self.status.value
+        elif isinstance(self.status, str):
+            return self.status
+        else:
+            return str(self.status) if self.status else 'draft'
     
     def to_dict(self):
         study_program = self.study_program
@@ -140,8 +189,9 @@ class Project(db.Model):
             'study_program_name': study_program.name if study_program else None,
             'student_id': self.student_id,
             'student_name': student_user.name if student_user else None,
-            'status': self.status,
+            'status': self.status_value,
             'github_link': self.github_link,
+            'documentation_link': self.documentation_link,
             'pdf_path': self.pdf_path,
             'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
             'created_at': self.created_at.isoformat(),
