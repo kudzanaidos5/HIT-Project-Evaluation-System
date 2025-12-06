@@ -268,7 +268,7 @@ export default function ReportsPage() {
                   {Object.keys(statusBreakdown).length === 0 && (
                     <p className="text-sm text-gray-500 dark:text-gray-400">No projects found for this filter set.</p>
                   )}
-                  {Object.entries(statusBreakdown).map(([status, count]) => (
+                  {Object.entries(statusBreakdown).map(([status, count]: [string, unknown]) => (
                     <div key={status} className="flex items-center justify-between">
                       <span
                         className={`px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${
@@ -277,7 +277,7 @@ export default function ReportsPage() {
                       >
                         {status}
                       </span>
-                      <span className="text-lg font-semibold text-gray-900 dark:text-white">{count}</span>
+                      <span className="text-lg font-semibold text-gray-900 dark:text-white">{count as number}</span>
                     </div>
                   ))}
                 </div>
@@ -289,7 +289,7 @@ export default function ReportsPage() {
                   {gradeDistribution.length === 0 && (
                     <p className="text-sm text-gray-500 dark:text-gray-400">No grade data available.</p>
                   )}
-                  {gradeDistribution.map((grade) => (
+                  {gradeDistribution.map((grade: { grade: string; count: number }) => (
                     <div key={grade.grade} className="flex items-center gap-4">
                       <div className="w-12 text-xl font-semibold text-gray-900 dark:text-gray-100">{grade.grade}</div>
                       <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2">
@@ -319,7 +319,7 @@ export default function ReportsPage() {
                   {(reportQuery.data.study_programs || []).length === 0 && (
                     <div className="p-5 text-sm text-gray-500 dark:text-gray-400">No study program data.</div>
                   )}
-                  {reportQuery.data.study_programs?.map((program, index) => (
+                  {reportQuery.data.study_programs?.map((program: any, index: number) => (
                     <div key={`${program.study_program_name}-${program.level}-${index}`} className="flex items-center justify-between p-5">
                       <div>
                         <div className="flex items-center gap-2 mb-1">
@@ -355,7 +355,7 @@ export default function ReportsPage() {
                   {(reportQuery.data.top_projects || []).length === 0 && (
                     <div className="p-5 text-sm text-gray-500 dark:text-gray-400">No projects available.</div>
                   )}
-                  {reportQuery.data.top_projects?.map((project, index) => (
+                  {reportQuery.data.top_projects?.map((project: any, index: number) => (
                     <div key={`${project.title}-${index}`} className="flex items-center justify-between p-5">
                       <div>
                         <p className="font-semibold text-gray-900 dark:text-white">{project.title}</p>
@@ -379,7 +379,7 @@ export default function ReportsPage() {
                 {(reportQuery.data.recent_activity || []).length === 0 && (
                   <div className="p-5 text-sm text-gray-500 dark:text-gray-400">No recent activity found.</div>
                 )}
-                {reportQuery.data.recent_activity?.map((activity) => (
+                {reportQuery.data.recent_activity?.map((activity: any) => (
                   <div key={activity.id} className="flex items-center justify-between p-5">
                     <div>
                       <p className="font-semibold text-gray-900 dark:text-white">{activity.project_title}</p>

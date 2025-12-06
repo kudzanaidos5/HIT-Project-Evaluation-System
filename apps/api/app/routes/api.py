@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.extensions import db
-from app.models.models import User, Student, Admin, StudyProgram, Project, Evaluation, EvaluationMark, UserRole, ProjectLevel, Deadline, EvaluationType, ProjectStatus
+from app.models.models import User, Student, Admin, StudyProgram, Project, Evaluation, EvaluationMark, UserRole, ProjectLevel, Deadline, EvaluationType, ProjectStatus, Notification, NotificationType, NotificationAudience
 from marshmallow import Schema, fields, ValidationError
 from sqlalchemy import func, desc
 from sqlalchemy.orm import joinedload
@@ -15,25 +15,34 @@ from reportlab.lib.utils import simpleSplit
 
 api_bp = Blueprint('api', __name__)
 
-# Handle OPTIONS requests for CORS preflight (Flask-CORS should handle this, but this ensures it works)
+# Handle OPTIONS requests for CORS preflight
+# Flask-CORS should handle this automatically with automatic_options=True,
+# but we add this as a fallback to ensure OPTIONS requests are handled
 @api_bp.before_request
 def handle_preflight():
     if request.method == "OPTIONS":
-        response = make_response()
+        response = make_response('', 200)  # Return 200 OK with empty body
         # Get CORS origins from config
         from flask import current_app
-        cors_origins = current_app.config.get("CORS_ORIGINS", "http://localhost:3000")
-        if isinstance(cors_origins, str) and ',' in cors_origins:
-            cors_origins = [origin.strip() for origin in cors_origins.split(',')]
-        elif isinstance(cors_origins, str):
-            cors_origins = [cors_origins]
+        try:
+            cors_origins = current_app.config.get("CORS_ORIGINS", "http://localhost:3000")
+            if isinstance(cors_origins, str) and ',' in cors_origins:
+                cors_origins = [origin.strip() for origin in cors_origins.split(',')]
+            elif isinstance(cors_origins, str):
+                cors_origins = [cors_origins]
+        except:
+            cors_origins = ["http://localhost:3000"]
         
         origin = request.headers.get('Origin')
-        if origin in cors_origins or '*' in cors_origins:
-            response.headers.add("Access-Control-Allow-Origin", origin or cors_origins[0] if cors_origins else "*")
+        # Always set CORS headers for OPTIONS requests
+        if origin:
+            response.headers.add("Access-Control-Allow-Origin", origin)
+        else:
+            response.headers.add("Access-Control-Allow-Origin", "*")
         response.headers.add('Access-Control-Allow-Headers', "Content-Type, Authorization")
         response.headers.add('Access-Control-Allow-Methods', "GET, POST, PUT, PATCH, DELETE, OPTIONS")
         response.headers.add('Access-Control-Allow-Credentials', "true")
+        response.headers.add('Access-Control-Max-Age', "3600")  # Cache preflight for 1 hour
         return response
 class UserSchema(Schema):
     name = fields.Str(required=True, min_length=2, max_length=100)
@@ -537,7 +546,10 @@ def update_course(course_id):
         return jsonify({"error": "Validation error", "details": err.messages}), 400
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to update study program"}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error updating study program: {error_details}")  # Log for debugging
+        return jsonify({"error": "Failed to update study program", "details": str(e)}), 500
 
 @api_bp.route('/study-programs/<int:course_id>', methods=['DELETE'])
 @jwt_required()
@@ -548,8 +560,13 @@ def delete_course(course_id):
         
         # Check if course has projects
         projects = Project.query.filter_by(study_program_id=course_id).all()
-        if projects:
-            return jsonify({"error": "Cannot delete study program with existing projects"}), 400
+        project_count = len(projects)
+        if project_count > 0:
+            return jsonify({
+                "error": "Cannot delete study program with existing projects",
+                "details": f"Study program has {project_count} associated project(s). Please delete or reassign the projects first.",
+                "project_count": project_count
+            }), 400
         
         db.session.delete(course)
         db.session.commit()
@@ -558,7 +575,10 @@ def delete_course(course_id):
         
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to delete study program"}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error deleting study program: {error_details}")  # Log for debugging
+        return jsonify({"error": "Failed to delete study program", "details": str(e)}), 500
 
 # Evaluation Templates Route (must be before other evaluation routes)
 @api_bp.route('/evaluation-templates', methods=['GET'])
@@ -706,6 +726,12 @@ def create_my_project():
         if not title or len(title) < 2:
             return jsonify({"error": "Project title is required (minimum 2 characters)"}), 400
         
+        description = data.get('description', '').strip()
+        if not description:
+            return jsonify({"error": "Description is required"}), 400
+        if len(description) < 50:
+            return jsonify({"error": f"Description must be at least 50 characters (currently {len(description)})"}), 400
+        
         study_program_id = data.get('study_program_id')
         if not study_program_id:
             return jsonify({"error": "Study program is required"}), 400
@@ -722,7 +748,7 @@ def create_my_project():
         # Create project with pending approval status
         project = Project(
             title=title,
-            description=data.get('description', '').strip(),
+            description=description,
             level=ProjectLevel(level),
             study_program_id=study_program_id,
             student_id=student.id,
@@ -730,6 +756,18 @@ def create_my_project():
         )
         
         db.session.add(project)
+        db.session.flush()  # Get project ID
+        
+        # Create notification for all admins
+        create_notification(
+            audience="ADMIN",
+            title="New Project Submitted",
+            message=f"New project '{project.title}' submitted by {current_user.name}",
+            notification_type="info",
+            action_label="Review project",
+            action_url=f"/projects/{project.id}"
+        )
+        
         db.session.commit()
         
         return jsonify({
@@ -836,6 +874,18 @@ def approve_project(project_id):
             db.session.rollback()
             return jsonify({"error": f"Failed to approve project: {error}"}), 500
         
+        # Create notification for student
+        student_user = project.student.user if project.student else None
+        if student_user:
+            create_notification(
+                user_id=student_user.id,
+                title="Project Approved",
+                message=f"Your project '{project.title}' has been approved! You can now proceed with your submission.",
+                notification_type="success",
+                action_label="View project",
+                action_url="/dashboard#submissions"  # Link to student dashboard submissions section
+            )
+        
         db.session.commit()
         
         return jsonify({
@@ -882,6 +932,21 @@ def reject_project(project_id):
         if rejection_reason:
             project.description = (project.description or '') + f"\n\n[Rejection Reason: {rejection_reason}]"
         
+        # Create notification for student
+        student_user = project.student.user if project.student else None
+        if student_user:
+            message = f"Your project '{project.title}' has been rejected."
+            if rejection_reason:
+                message += f" Reason: {rejection_reason}"
+            create_notification(
+                user_id=student_user.id,
+                title="Project Rejected",
+                message=message,
+                notification_type="error",
+                action_label="View project",
+                action_url="/dashboard"  # Link to student dashboard
+            )
+        
         db.session.commit()
         
         return jsonify({
@@ -916,7 +981,10 @@ def get_project_evaluations(project_id):
 @jwt_required()
 @require_admin_role()
 def create_evaluation(project_id):
-    project = Project.query.get_or_404(project_id)
+    # Eagerly load student and user relationships to ensure they're available
+    project = Project.query.options(
+        joinedload(Project.student).joinedload(Student.user)
+    ).get_or_404(project_id)
     
     try:
         data = evaluation_schema.load(request.json)
@@ -1025,10 +1093,28 @@ def create_evaluation(project_id):
     project_eval = next((e for e in project_evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
     presentation_eval = next((e for e in project_evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
     
+    # Store overall_percentage for notification
+    calculated_overall_percentage = None
+    
     if project_eval and presentation_eval:
-        total_marks = (project_eval.total_project_marks or 0) + (presentation_eval.total_presentation_marks or 0)
-        # Total possible marks: 70 (project) + 30 (presentation) = 100
-        overall_percentage = round((total_marks / 100) * 100, 2) if total_marks else 0
+        # Calculate actual total marks from the marks themselves
+        project_total = sum(mark.score for mark in project_eval.marks) if project_eval.marks.count() > 0 else (project_eval.total_project_marks or 0)
+        presentation_total = sum(mark.score for mark in presentation_eval.marks) if presentation_eval.marks.count() > 0 else (presentation_eval.total_presentation_marks or 0)
+        
+        # Calculate max possible marks
+        project_max = sum(mark.max_score for mark in project_eval.marks) if project_eval.marks.count() > 0 else 70
+        presentation_max = sum(mark.max_score for mark in presentation_eval.marks) if presentation_eval.marks.count() > 0 else 30
+        
+        total_marks = project_total + presentation_total
+        total_max_marks = project_max + presentation_max  # Should be 100 (70 + 30)
+        
+        # Calculate overall percentage correctly
+        overall_percentage = round((total_marks / total_max_marks) * 100, 2) if total_max_marks > 0 else 0
+        calculated_overall_percentage = overall_percentage  # Store for notification
+        
+        # Update total_project_marks and total_presentation_marks for consistency
+        project_eval.total_project_marks = project_total
+        presentation_eval.total_presentation_marks = presentation_total
         
         # Determine grade
         grade = 'F'
@@ -1060,6 +1146,53 @@ def create_evaluation(project_id):
                 print(f"Warning: Could not update project status: {error}")
     
     db.session.commit()
+    
+    # Create notification for student when evaluation is created
+    try:
+        # Refresh project to ensure relationships are loaded
+        db.session.refresh(project)
+        # Access student relationship
+        student = project.student
+        if student:
+            # Access user relationship from student
+            student_user = student.user
+            if student_user:
+                # Use the calculated overall_percentage if both evaluations exist
+                if calculated_overall_percentage is not None:
+                    # Both evaluations exist, use overall percentage
+                    score_str = f"{calculated_overall_percentage}%"
+                    notification = create_notification(
+                        user_id=student_user.id,
+                        title="Evaluation Released",
+                        message=f"Your project '{project.title}' has been evaluated. Overall Score: {score_str}",
+                        notification_type="success",
+                        action_label="View evaluation",
+                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
+                    )
+                else:
+                    # Only one evaluation exists, use individual percentage
+                    eval_type_str = evaluation_type.value.lower()
+                    score_str = f"{percentage}%"
+                    notification = create_notification(
+                        user_id=student_user.id,
+                        title="Evaluation Released",
+                        message=f"Your project '{project.title}' has been evaluated ({eval_type_str}). Score: {score_str}",
+                        notification_type="success",
+                        action_label="View evaluation",
+                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
+                    )
+                if not notification:
+                    print(f"Warning: Failed to create notification for student {student_user.id} for evaluation {evaluation.id}")
+            else:
+                print(f"Warning: Student {student.id} has no associated user for project {project_id}")
+        else:
+            print(f"Warning: Project {project_id} has no associated student")
+    except Exception as e:
+        # Log error but don't fail the request
+        print(f"Error creating notification for evaluation {evaluation.id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    
     return jsonify(evaluation.to_dict()), 201
 
 @api_bp.route('/evaluations/<int:evaluation_id>', methods=['PATCH'])
@@ -1093,11 +1226,114 @@ def update_evaluation(evaluation_id):
             total_score += mark_data['score']
             total_max_score += mark_data['max_score']
         
-        # Recalculate total score
+        # Recalculate total score (as percentage)
         if total_max_score > 0:
             evaluation.total_score = round((total_score / total_max_score) * 100, 2)
+        
+        # Update total_project_marks or total_presentation_marks based on evaluation type
+        if evaluation.evaluation_type == EvaluationType.PROJECT:
+            evaluation.total_project_marks = total_score
+        elif evaluation.evaluation_type == EvaluationType.PRESENTATION:
+            evaluation.total_presentation_marks = total_score
     
     db.session.commit()
+    
+    # Recalculate overall percentage and grade if both evaluations exist
+    project = evaluation.project
+    project_evaluations = Evaluation.query.filter_by(project_id=project.id).all()
+    project_eval = next((e for e in project_evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
+    presentation_eval = next((e for e in project_evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
+    
+    # Store overall_percentage for notification
+    calculated_overall_percentage = None
+    
+    if project_eval and presentation_eval:
+        # Calculate actual total marks from the marks themselves
+        project_total = sum(mark.score for mark in project_eval.marks) if project_eval.marks.count() > 0 else (project_eval.total_project_marks or 0)
+        presentation_total = sum(mark.score for mark in presentation_eval.marks) if presentation_eval.marks.count() > 0 else (presentation_eval.total_presentation_marks or 0)
+        
+        # Calculate max possible marks
+        project_max = sum(mark.max_score for mark in project_eval.marks) if project_eval.marks.count() > 0 else 70
+        presentation_max = sum(mark.max_score for mark in presentation_eval.marks) if presentation_eval.marks.count() > 0 else 30
+        
+        total_marks = project_total + presentation_total
+        total_max_marks = project_max + presentation_max  # Should be 100 (70 + 30)
+        
+        # Calculate overall percentage correctly
+        overall_percentage = round((total_marks / total_max_marks) * 100, 2) if total_max_marks > 0 else 0
+        calculated_overall_percentage = overall_percentage  # Store for notification
+        
+        # Determine grade
+        grade = 'F'
+        if overall_percentage >= 90:
+            grade = 'A'
+        elif overall_percentage >= 80:
+            grade = 'B'
+        elif overall_percentage >= 70:
+            grade = 'C'
+        elif overall_percentage >= 60:
+            grade = 'D'
+        
+        # Update both evaluations with overall percentage and grade
+        project_eval.overall_percentage = overall_percentage
+        project_eval.grade = grade
+        project_eval.total_project_marks = project_total
+        presentation_eval.overall_percentage = overall_percentage
+        presentation_eval.grade = grade
+        presentation_eval.total_presentation_marks = presentation_total
+        
+        db.session.commit()
+    
+    # Refresh evaluation object to ensure we have the latest data
+    db.session.refresh(evaluation)
+    
+    # Create notification for student when evaluation is updated
+    try:
+        # Refresh project to ensure relationships are loaded
+        project = evaluation.project
+        db.session.refresh(project)
+        # Access student relationship
+        student = project.student
+        if student:
+            # Access user relationship from student
+            student_user = student.user
+            if student_user:
+                # Use the calculated overall_percentage if both evaluations exist
+                if calculated_overall_percentage is not None:
+                    # Both evaluations exist, use overall percentage
+                    score_str = f"{calculated_overall_percentage}%"
+                    notification = create_notification(
+                        user_id=student_user.id,
+                        title="Evaluation Updated",
+                        message=f"Your project '{project.title}' evaluation has been updated. Overall Score: {score_str}",
+                        notification_type="info",
+                        action_label="View evaluation",
+                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
+                    )
+                else:
+                    # Only one evaluation exists, use individual percentage
+                    eval_type_str = evaluation.evaluation_type.value.lower()
+                    score_str = f"{evaluation.total_score}%"
+                    notification = create_notification(
+                        user_id=student_user.id,
+                        title="Evaluation Updated",
+                        message=f"Your project '{project.title}' evaluation ({eval_type_str}) has been updated. Score: {score_str}",
+                        notification_type="info",
+                        action_label="View evaluation",
+                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
+                    )
+                if not notification:
+                    print(f"Warning: Failed to create notification for student {student_user.id} for evaluation {evaluation.id}")
+            else:
+                print(f"Warning: Student {student.id} has no associated user for project {project.id}")
+        else:
+            print(f"Warning: Project {project.id} has no associated student")
+    except Exception as e:
+        # Log error but don't fail the request
+        print(f"Error creating notification for evaluation update {evaluation.id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    
     return jsonify(evaluation.to_dict()), 200
 
 # User Management Routes (Admin Only)
@@ -1213,7 +1449,6 @@ def update_user(user_id):
                 return jsonify({"error": "Email already taken by another user"}), 400
             
             user.email = email
-            user.email = data['email']
         if 'password' in data and data['password']:
             # Update password if provided
             user.set_password(data['password'])
@@ -1724,6 +1959,221 @@ def get_missed_deadlines():
         print(error_details)
         return jsonify({"error": "Failed to fetch missed deadlines", "details": str(e)}), 500
 
+# Notification Helper Functions
+def create_notification(user_id=None, audience=None, title="", message="", notification_type="info", action_label=None, action_url=None):
+    """Helper function to create a notification"""
+    try:
+        notification = Notification(
+            user_id=user_id,
+            audience=NotificationAudience(audience) if audience else None,
+            title=title,
+            message=message,
+            type=NotificationType(notification_type),
+            action_label=action_label,
+            action_url=action_url
+        )
+        db.session.add(notification)
+        db.session.commit()
+        return notification
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error creating notification: {str(e)}")
+        return None
+
+# Notification Routes
+@api_bp.route('/notifications', methods=['GET'])
+@jwt_required()
+def get_notifications():
+    """Get all notifications for the current user"""
+    try:
+        user_id_str = get_jwt_identity()
+        if not user_id_str:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = int(user_id_str)
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        unread_only = request.args.get('unread_only', 'false').lower() == 'true'
+        
+        # Build query: notifications for this user
+        query = db.session.query(Notification).filter(
+            db.or_(
+                Notification.user_id == user_id,
+                Notification.audience == NotificationAudience.ALL,
+                Notification.audience == NotificationAudience(user.role.value)
+            )
+        )
+        
+        if unread_only:
+            query = query.filter(Notification.read == False)
+        
+        notifications = query.order_by(Notification.created_at.desc()).all()
+        
+        return jsonify({
+            'notifications': [n.to_dict() for n in notifications]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch notifications", "details": str(e)}), 500
+
+@api_bp.route('/notifications/unread-count', methods=['GET'])
+@jwt_required()
+def get_unread_count():
+    """Get count of unread notifications for current user"""
+    try:
+        user_id_str = get_jwt_identity()
+        if not user_id_str:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = int(user_id_str)
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        count = db.session.query(Notification).filter(
+            Notification.read == False,
+            db.or_(
+                Notification.user_id == user_id,
+                Notification.audience == NotificationAudience.ALL,
+                Notification.audience == NotificationAudience(user.role.value)
+            )
+        ).count()
+        
+        return jsonify({'count': count}), 200
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch unread count", "details": str(e)}), 500
+
+@api_bp.route('/notifications/<int:notification_id>/read', methods=['POST'])
+@jwt_required()
+def mark_notification_read(notification_id):
+    """Mark a notification as read"""
+    try:
+        user_id_str = get_jwt_identity()
+        if not user_id_str:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = int(user_id_str)
+        notification = Notification.query.get_or_404(notification_id)
+        
+        # Verify notification belongs to user
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Check if user has access to this notification
+        has_access = (
+            notification.user_id == user_id or
+            notification.audience == NotificationAudience.ALL or
+            (notification.audience and notification.audience.value == user.role.value)
+        )
+        
+        if not has_access:
+            return jsonify({"error": "Access denied"}), 403
+        
+        notification.read = True
+        notification.read_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({"message": "Notification marked as read"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to mark notification as read", "details": str(e)}), 500
+
+@api_bp.route('/notifications/mark-all-read', methods=['POST'])
+@jwt_required()
+def mark_all_notifications_read():
+    """Mark all notifications for current user as read"""
+    try:
+        user_id_str = get_jwt_identity()
+        if not user_id_str:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = int(user_id_str)
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        notifications = db.session.query(Notification).filter(
+            Notification.read == False,
+            db.or_(
+                Notification.user_id == user_id,
+                Notification.audience == NotificationAudience.ALL,
+                Notification.audience == NotificationAudience(user.role.value)
+            )
+        ).all()
+        
+        now = datetime.utcnow()
+        for notification in notifications:
+            notification.read = True
+            notification.read_at = now
+        
+        db.session.commit()
+        
+        return jsonify({"message": "All notifications marked as read"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to mark all notifications as read", "details": str(e)}), 500
+
+@api_bp.route('/notifications/<int:notification_id>', methods=['DELETE'])
+@jwt_required()
+def delete_notification(notification_id):
+    """Delete a notification"""
+    try:
+        user_id_str = get_jwt_identity()
+        if not user_id_str:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = int(user_id_str)
+        notification = Notification.query.get_or_404(notification_id)
+        
+        # Verify notification belongs to user
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Check if user has access to this notification
+        has_access = (
+            notification.user_id == user_id or
+            notification.audience == NotificationAudience.ALL or
+            (notification.audience and notification.audience.value == user.role.value)
+        )
+        
+        if not has_access:
+            return jsonify({"error": "Access denied"}), 403
+        
+        db.session.delete(notification)
+        db.session.commit()
+        
+        return jsonify({"message": "Notification deleted"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to delete notification", "details": str(e)}), 500
+
+@api_bp.route('/notifications', methods=['POST'])
+@jwt_required()
+@require_admin_role()
+def create_notification_endpoint():
+    """Create a notification (Admin only)"""
+    try:
+        data = request.json
+        notification = create_notification(
+            user_id=data.get('user_id'),
+            audience=data.get('audience'),
+            title=data.get('title', ''),
+            message=data.get('message', ''),
+            notification_type=data.get('type', 'info'),
+            action_label=data.get('action_label'),
+            action_url=data.get('action_url')
+        )
+        
+        if notification:
+            return jsonify({'notification': notification.to_dict()}), 201
+        else:
+            return jsonify({"error": "Failed to create notification"}), 500
+    except Exception as e:
+        return jsonify({"error": "Failed to create notification", "details": str(e)}), 500
+
 # Project Submission Routes
 @api_bp.route('/projects/<int:project_id>/submit', methods=['POST'])
 def submit_project(project_id):
@@ -1744,6 +2194,18 @@ def submit_project(project_id):
         if not success:
             db.session.rollback()
             return jsonify({"error": f"Failed to update project status: {error}"}), 500
+        
+        # Create notification for all admins
+        student_user = project.student.user if project.student else None
+        student_name = student_user.name if student_user else "Student"
+        create_notification(
+            audience="ADMIN",
+            title="Project Updated",
+            message=f"Project '{project.title}' has been updated by {student_name}",
+            notification_type="info",
+            action_label="View project",
+            action_url=f"/projects/{project.id}"
+        )
         
         db.session.commit()
         return jsonify(project.to_dict()), 200
@@ -1842,6 +2304,9 @@ def _normalize_status(status):
     if isinstance(status, ProjectStatus):
         return status
     elif isinstance(status, str):
+        # Handle legacy 'pending' status (should be 'pending_approval')
+        if status.lower() == 'pending':
+            return ProjectStatus.PENDING_APPROVAL
         # Try to find enum by value
         for ps in ProjectStatus:
             if ps.value == status:
@@ -2057,19 +2522,55 @@ def get_project_evaluation_details(project):
                     "feedback": ""
                 }
     
-    # Calculate total and percentage
-    # If both evaluations exist, use overall_percentage and grade
-    if project_eval and presentation_eval and project_eval.overall_percentage is not None:
-        total_score = project_eval.overall_percentage
-        percentage = project_eval.overall_percentage
+    # Calculate total and percentage from actual marks
+    project_total = 0
+    project_max = 0
+    presentation_total = 0
+    presentation_max = 0
+    
+    if project_eval:
+        if project_eval.marks.count() > 0:
+            project_total = sum(mark.score for mark in project_eval.marks)
+            project_max = sum(mark.max_score for mark in project_eval.marks)
+        else:
+            project_total = project_eval.total_project_marks or 0
+            project_max = 70  # Default max for project evaluation
+    
+    if presentation_eval:
+        if presentation_eval.marks.count() > 0:
+            presentation_total = sum(mark.score for mark in presentation_eval.marks)
+            presentation_max = sum(mark.max_score for mark in presentation_eval.marks)
+        else:
+            presentation_total = presentation_eval.total_presentation_marks or 0
+            presentation_max = 30  # Default max for presentation evaluation
+    
+    # If both evaluations exist, combine them
+    if project_eval and presentation_eval:
+        total_score = project_total + presentation_total
+        max_score = project_max + presentation_max  # Should be 100 (70 + 30)
+        # Use overall_percentage if available, otherwise calculate it
+        if project_eval.overall_percentage is not None:
+            percentage = project_eval.overall_percentage
+        else:
+            percentage = round((total_score / max_score) * 100, 2) if max_score > 0 else 0
         grade = project_eval.grade
-        max_score = 100
     else:
-        # Use primary evaluation's score
-        total_score = primary_eval.total_score
-        percentage = round(total_score, 2)
+        # Use primary evaluation's actual marks
+        if primary_eval == project_eval:
+            total_score = project_total
+            max_score = project_max
+        else:
+            total_score = presentation_total
+            max_score = presentation_max
+        
+        # Calculate percentage from total_score (which is stored as percentage in the DB)
+        # But we want to use actual marks if available
+        if primary_eval.marks.count() > 0:
+            percentage = round((total_score / max_score) * 100, 2) if max_score > 0 else 0
+        else:
+            # Fallback to stored percentage
+            percentage = round(primary_eval.total_score, 2)
         grade = primary_eval.grade
-        max_score = 100
     
     # Combine feedback from both evaluations if they exist
     overall_feedback = ""

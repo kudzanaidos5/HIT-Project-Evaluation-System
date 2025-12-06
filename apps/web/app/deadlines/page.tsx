@@ -124,9 +124,7 @@ export default function DeadlinesPage() {
           <Clock className="h-7 w-7 text-white" />
         </div>
         <div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-            Project Deadlines
-          </h1>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Project Deadlines</h1>
           <p className="text-gray-600 dark:text-gray-400 mt-1">Manage submission deadlines for Level 200 and 400 projects</p>
         </div>
       </div>
@@ -277,7 +275,7 @@ export default function DeadlinesPage() {
 
           <div className="grid gap-6 md:grid-cols-2">
             {/* Level 200 Missed Deadlines */}
-            {missedDeadlines?.level_200.length > 0 && (
+            {missedDeadlines?.level_200 && missedDeadlines.level_200.length > 0 && (
               <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-red-200 dark:border-red-800 overflow-hidden">
                 <div className="bg-gradient-to-r from-red-500 via-red-600 to-orange-600 px-6 py-5">
                   <h3 className="text-2xl font-bold text-white">Level 200 - Missed Deadlines</h3>
@@ -339,7 +337,7 @@ export default function DeadlinesPage() {
             )}
 
             {/* Level 400 Missed Deadlines */}
-            {missedDeadlines?.level_400.length > 0 && (
+            {missedDeadlines?.level_400 && missedDeadlines.level_400.length > 0 && (
               <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-red-200 dark:border-red-800 overflow-hidden">
                 <div className="bg-gradient-to-r from-red-500 via-red-600 to-orange-600 px-6 py-5">
                   <h3 className="text-2xl font-bold text-white">Level 400 - Missed Deadlines</h3>
@@ -407,8 +405,8 @@ export default function DeadlinesPage() {
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600"></div>
             </div>
           ) : (
-            missedDeadlines?.level_200.length === 0 && 
-            missedDeadlines?.level_400.length === 0 && (
+            (!missedDeadlines?.level_200 || missedDeadlines.level_200.length === 0) && 
+            (!missedDeadlines?.level_400 || missedDeadlines.level_400.length === 0) && (
               <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-6 text-center">
                 <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
                 <h3 className="text-lg font-semibold text-green-900 dark:text-green-100 mb-2">

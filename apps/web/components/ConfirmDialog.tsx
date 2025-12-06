@@ -13,6 +13,7 @@ interface ConfirmDialogProps {
   cancelText?: string
   confirmButtonStyle?: 'danger' | 'primary' | 'warning'
   isLoading?: boolean
+  confirmDisabled?: boolean
 }
 
 export default function ConfirmDialog({
@@ -25,6 +26,7 @@ export default function ConfirmDialog({
   cancelText = 'Cancel',
   confirmButtonStyle = 'primary',
   isLoading = false,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const { isDarkMode } = useThemeStore()
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -46,7 +48,7 @@ export default function ConfirmDialog({
       
       // Handle Enter key
       const handleEnter = (e: KeyboardEvent) => {
-        if (e.key === 'Enter' && !isLoading && document.activeElement === confirmButtonRef.current) {
+        if (e.key === 'Enter' && !isLoading && !confirmDisabled && document.activeElement === confirmButtonRef.current) {
           onConfirm()
         }
       }
@@ -63,7 +65,7 @@ export default function ConfirmDialog({
         document.body.style.overflow = 'unset'
       }
     }
-  }, [isOpen, onClose, onConfirm, isLoading])
+  }, [isOpen, onClose, onConfirm, isLoading, confirmDisabled])
 
   if (!isOpen) return null
 
@@ -165,7 +167,7 @@ export default function ConfirmDialog({
             <button
               ref={confirmButtonRef}
               onClick={onConfirm}
-              disabled={isLoading}
+              disabled={isLoading || confirmDisabled}
               className={getConfirmButtonClasses()}
             >
               {isLoading ? (

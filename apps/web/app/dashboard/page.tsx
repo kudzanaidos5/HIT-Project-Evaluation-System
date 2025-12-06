@@ -208,13 +208,44 @@ export default function DashboardPage() {
                           Level {project.level} • {project.study_program_name || 'Unknown Study Program'}
                         </p>
                       </div>
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        project.status === 'evaluated' 
-                          ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200' 
-                          : 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
-                      }`}>
-                        {project.status === 'evaluated' ? 'Evaluated' : 'Pending'}
-                      </span>
+                      {(() => {
+                        const status = project.status || 'draft'
+                        const statusConfig: Record<string, { label: string; className: string }> = {
+                          'pending_approval': {
+                            label: 'Pending Approval',
+                            className: 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200'
+                          },
+                          'draft': {
+                            label: 'Draft',
+                            className: 'bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200'
+                          },
+                          'submitted': {
+                            label: 'Submitted',
+                            className: 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200'
+                          },
+                          'under_review': {
+                            label: 'Under Review',
+                            className: 'bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200'
+                          },
+                          'evaluated': {
+                            label: 'Evaluated',
+                            className: 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
+                          },
+                          'rejected': {
+                            label: 'Rejected',
+                            className: 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200'
+                          }
+                        }
+                        const config = statusConfig[status] || {
+                          label: 'Unknown',
+                          className: 'bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200'
+                        }
+                        return (
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.className}`}>
+                            {config.label}
+                          </span>
+                        )
+                      })()}
                     </div>
                   ))}
                 </div>

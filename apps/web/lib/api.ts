@@ -390,7 +390,7 @@ export const studentsAPI = {
 
   createMyProject: async (data: {
     title: string
-    description?: string
+    description: string
     study_program_id: number
     level: 200 | 400
   }) => {
@@ -418,6 +418,48 @@ export const reportsAPI = {
     })
     return response.data
   },
+}
+
+export const notificationsAPI = {
+  getAll: async (params?: { unread_only?: boolean }) => {
+    const queryParams = new URLSearchParams()
+    if (params?.unread_only) queryParams.append('unread_only', 'true')
+    const response = await apiClient.get(`/notifications?${queryParams.toString()}`)
+    return response.data
+  },
+
+  getUnreadCount: async () => {
+    const response = await apiClient.get('/notifications/unread-count')
+    return response.data
+  },
+
+  markAsRead: async (id: string) => {
+    const response = await apiClient.post(`/notifications/${id}/read`)
+    return response.data
+  },
+
+  markAllAsRead: async () => {
+    const response = await apiClient.post('/notifications/mark-all-read')
+    return response.data
+  },
+
+  delete: async (id: string) => {
+    const response = await apiClient.delete(`/notifications/${id}`)
+    return response.data
+  },
+
+  create: async (notificationData: {
+    user_id?: number
+    audience?: 'ADMIN' | 'STUDENT' | 'ALL'
+    title: string
+    message: string
+    type: 'success' | 'error' | 'info' | 'warning'
+    action_label?: string
+    action_url?: string
+  }) => {
+    const response = await apiClient.post('/notifications', notificationData)
+    return response.data
+  }
 }
 
 export default apiClient

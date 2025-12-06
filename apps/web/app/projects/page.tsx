@@ -1,10 +1,20 @@
 'use client'
 
 import React, { useState, useMemo } from 'react'
-import { useProjects, useApproveProject, useRejectProject } from '../../lib/hooks'
+import { useProjects, useApproveProject, useRejectProject, useStudyPrograms } from '../../lib/hooks'
 import { useThemeStore, useAuthStore, useUIStore } from '../../lib/stores'
 import Link from 'next/link'
 import ConfirmDialog from '../../components/ConfirmDialog'
+
+// Valid project statuses from the system
+const PROJECT_STATUSES = [
+  { value: 'pending_approval', label: 'Pending Approval' },
+  { value: 'draft', label: 'Draft' },
+  { value: 'submitted', label: 'Submitted' },
+  { value: 'under_review', label: 'Under Review' },
+  { value: 'evaluated', label: 'Evaluated' },
+  { value: 'rejected', label: 'Rejected' },
+] as const
 
 export default function ProjectsPage() {
   const { isDarkMode } = useThemeStore()
@@ -13,12 +23,15 @@ export default function ProjectsPage() {
   const isAdmin = user?.role === 'ADMIN'
   const approveProjectMutation = useApproveProject()
   const rejectProjectMutation = useRejectProject()
+  const { data: studyProgramsData, isLoading: studyProgramsLoading } = useStudyPrograms()
+  const studyPrograms = studyProgramsData || []
   
   const [searchTerm, setSearchTerm] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'pending_approval' | 'evaluated'>('all')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
   const [projectToReject, setProjectToReject] = useState<number | null>(null)
   const [rejectionReason, setRejectionReason] = useState('')
+  const [rejectionReasonError, setRejectionReasonError] = useState('')
   const [levelFilter, setLevelFilter] = useState<'all' | '200' | '400'>('all')
   const [studyProgramFilter, setStudyProgramFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<'title' | 'student_name' | 'status' | 'created_at'>('created_at')
@@ -90,7 +103,7 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-6 max-w-full overflow-x-hidden">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Projects</h1>
         <p className="mt-2 text-gray-600 dark:text-gray-400">
@@ -122,13 +135,15 @@ export default function ProjectsPage() {
             <select
               id="status"
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as 'all' | 'pending' | 'pending_approval' | 'evaluated')}
+              onChange={(e) => setStatusFilter(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="all">All Status</option>
-              <option value="pending_approval">Pending Approval</option>
-              <option value="pending">Pending</option>
-              <option value="evaluated">Evaluated</option>
+              {PROJECT_STATUSES.map((status) => (
+                <option key={status.value} value={status.value}>
+                  {status.label}
+                </option>
+              ))}
             </select>
           </div>
           
@@ -156,13 +171,15 @@ export default function ProjectsPage() {
               id="study_program"
               value={studyProgramFilter}
               onChange={(e) => setStudyProgramFilter(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              disabled={studyProgramsLoading}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <option value="all">All Study Programs</option>
-              <option value="1">Intro to Programming</option>
-              <option value="2">Database Systems</option>
-              <option value="3">Software Engineering</option>
-              <option value="4">Web Development</option>
+              {studyPrograms.map((program: any) => (
+                <option key={program.id} value={program.id.toString()}>
+                  {program.code}
+                </option>
+              ))}
             </select>
           </div>
           
@@ -211,21 +228,12 @@ export default function ProjectsPage() {
       </div>
 
       {/* Projects List */}
-      <div className="bg-white dark:bg-gray-800 shadow rounded-lg">
+      <div className="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
             <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
               Projects ({projects.length})
             </h3>
-            <Link
-              href="/evaluation"
-              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-            >
-              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              New Evaluation
-            </Link>
           </div>
         </div>
 
@@ -248,32 +256,53 @@ export default function ProjectsPage() {
             ) : projects.length > 0 ? (
           <div className="divide-y divide-gray-200 dark:divide-gray-700">
             {projects.map((project: any) => (
-              <div key={project.id} className="p-6 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center">
+              <div key={project.id} className="p-6 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors overflow-hidden">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="flex items-center flex-wrap gap-2">
                       <h4 className="text-lg font-medium text-gray-900 dark:text-gray-100">{project.title}</h4>
-                      <span className={`ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        project.status === 'evaluated' 
-                          ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400'
-                          : project.status === 'pending_approval'
-                          ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-400'
-                          : project.status === 'rejected'
-                          ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-400'
-                          : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-400'
-                      }`}>
-                        {project.status === 'evaluated' ? 'Evaluated' 
-                          : project.status === 'pending_approval' ? 'Pending Approval'
-                          : project.status === 'rejected' ? 'Rejected'
-                          : 'Pending'}
-                      </span>
+                      {(() => {
+                        const status = project.status || 'draft'
+                        const statusConfig: Record<string, { label: string; className: string }> = {
+                          'pending_approval': {
+                            label: 'Pending Approval',
+                            className: 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-400'
+                          },
+                          'draft': {
+                            label: 'Draft',
+                            className: 'bg-gray-100 dark:bg-gray-900/30 text-gray-800 dark:text-gray-400'
+                          },
+                          'submitted': {
+                            label: 'Submitted',
+                            className: 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-400'
+                          },
+                          'under_review': {
+                            label: 'Under Review',
+                            className: 'bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-400'
+                          },
+                          'evaluated': {
+                            label: 'Evaluated',
+                            className: 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400'
+                          },
+                          'rejected': {
+                            label: 'Rejected',
+                            className: 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-400'
+                          }
+                        }
+                        const config = statusConfig[status] || {
+                          label: 'Unknown',
+                          className: 'bg-gray-100 dark:bg-gray-900/30 text-gray-800 dark:text-gray-400'
+                        }
+                        return (
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.className}`}>
+                            {config.label}
+                          </span>
+                        )
+                      })()}
                     </div>
                     <div className="mt-2 text-sm text-gray-600 dark:text-gray-400">
                       <p><strong>Student:</strong> {project.student_name || 'Unknown'}</p>
                       <p><strong>Study Program:</strong> {project.study_program_name || 'Unknown'} (Level {project.level})</p>
-                      {project.description && (
-                        <p className="mt-1"><strong>Description:</strong> {project.description}</p>
-                      )}
                     </div>
                     <div className="mt-2 text-xs text-gray-500 dark:text-gray-500">
                       Created: {new Date(project.created_at).toLocaleDateString()}
@@ -284,10 +313,10 @@ export default function ProjectsPage() {
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-2 flex-shrink-0 flex-wrap gap-2">
                     <Link
                       href={`/projects/${project.id}`}
-                      className="inline-flex items-center px-3 py-2 border border-gray-300 dark:border-gray-600 text-sm font-medium rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                      className="inline-flex items-center px-3 py-2 border border-gray-300 dark:border-gray-600 text-sm font-medium rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 whitespace-nowrap"
                     >
                       View Details
                     </Link>
@@ -297,13 +326,13 @@ export default function ProjectsPage() {
                           onClick={async () => {
                             try {
                               await approveProjectMutation.mutateAsync(project.id)
-                              addNotification('Project approved successfully!', 'success', { title: 'Success' })
+                              addNotification('Project approved successfully!', 'success', { title: 'Success', audience: 'ADMIN', persistent: true })
                             } catch (error: any) {
-                              addNotification(`Error: ${error.response?.data?.error || error.message || 'Failed to approve project'}`, 'error', { title: 'Error' })
+                              addNotification(`Error: ${error.response?.data?.error || error.message || 'Failed to approve project'}`, 'error', { title: 'Error', audience: 'ADMIN', persistent: true })
                             }
                           }}
                           disabled={approveProjectMutation.isPending}
-                          className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                         >
                           {approveProjectMutation.isPending ? 'Approving...' : 'Approve'}
                         </button>
@@ -313,19 +342,11 @@ export default function ProjectsPage() {
                             setRejectDialogOpen(true)
                           }}
                           disabled={rejectProjectMutation.isPending}
-                          className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                         >
                           Reject
                         </button>
                       </>
-                    )}
-                    {project.status === 'pending' && (
-                      <Link
-                        href={`/evaluation?projectId=${project.id}`}
-                        className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                      >
-                        Evaluate
-                      </Link>
                     )}
                   </div>
                 </div>
@@ -344,19 +365,6 @@ export default function ProjectsPage() {
                 : 'Get started by creating a new project evaluation.'
               }
             </p>
-            {(!searchTerm && statusFilter === 'all' && levelFilter === 'all') && (
-              <div className="mt-6">
-                <Link
-                  href="/evaluation"
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                >
-                  <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                  </svg>
-                  Create First Evaluation
-                </Link>
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -368,17 +376,29 @@ export default function ProjectsPage() {
           setRejectDialogOpen(false)
           setProjectToReject(null)
           setRejectionReason('')
+          setRejectionReasonError('')
         }}
         onConfirm={async () => {
           if (!projectToReject) return
+          
+          // Validate rejection reason
+          const trimmedReason = rejectionReason.trim()
+          if (!trimmedReason) {
+            setRejectionReasonError('Rejection reason is required')
+            addNotification('Please provide a reason for rejecting the project', 'error', { title: 'Validation Error', audience: 'ADMIN', persistent: true })
+            return
+          }
+          
+          setRejectionReasonError('')
           try {
-            await rejectProjectMutation.mutateAsync({ id: projectToReject, reason: rejectionReason || undefined })
-            addNotification('Project rejected successfully!', 'success', { title: 'Success' })
+            await rejectProjectMutation.mutateAsync({ id: projectToReject, reason: trimmedReason })
+            addNotification('Project rejected successfully!', 'success', { title: 'Success', audience: 'ADMIN', persistent: true })
             setRejectDialogOpen(false)
             setProjectToReject(null)
             setRejectionReason('')
+            setRejectionReasonError('')
           } catch (error: any) {
-            addNotification(`Error: ${error.response?.data?.error || error.message || 'Failed to reject project'}`, 'error', { title: 'Error' })
+            addNotification(`Error: ${error.response?.data?.error || error.message || 'Failed to reject project'}`, 'error', { title: 'Error', audience: 'ADMIN', persistent: true })
           }
         }}
         title="Reject Project"
@@ -386,22 +406,36 @@ export default function ProjectsPage() {
           <div>
             <p className="mb-4">Are you sure you want to reject this project?</p>
             <label htmlFor="rejection-reason" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Rejection Reason (optional)
+              Rejection Reason <span className="text-red-500">*</span>
             </label>
             <textarea
               id="rejection-reason"
               value={rejectionReason}
-              onChange={(e) => setRejectionReason(e.target.value)}
+              onChange={(e) => {
+                setRejectionReason(e.target.value)
+                if (rejectionReasonError) {
+                  setRejectionReasonError('')
+                }
+              }}
               placeholder="Enter reason for rejection..."
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              required
+              className={`w-full px-3 py-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 ${
+                rejectionReasonError
+                  ? 'border-red-500 focus:ring-red-500 focus:border-red-500'
+                  : 'border-gray-300 dark:border-gray-600 focus:ring-red-500 focus:border-red-500'
+              }`}
               rows={3}
             />
+            {rejectionReasonError && (
+              <p className="mt-1 text-sm text-red-600 dark:text-red-400">{rejectionReasonError}</p>
+            )}
           </div>
         }
         confirmText="Reject"
         cancelText="Cancel"
         confirmButtonStyle="danger"
         isLoading={rejectProjectMutation.isPending}
+        confirmDisabled={!rejectionReason.trim()}
       />
     </div>
   )

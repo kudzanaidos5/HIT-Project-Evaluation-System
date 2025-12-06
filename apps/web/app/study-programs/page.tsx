@@ -77,7 +77,21 @@ export default function StudyProgramManagementPage() {
       
       closeModal()
     } catch (error: any) {
-      addNotification(`Error: ${error.message}`, 'error', { title: 'Error' })
+      const errorData = error?.response?.data || {}
+      const errorMessage = errorData.error || errorData.details || error?.message || 'Failed to save study program'
+      // Handle validation errors with details
+      let displayMessage = errorMessage
+      if (errorData.details && typeof errorData.details === 'object') {
+        // If details is an object (like from marshmallow validation), format it
+        const detailsList = Object.entries(errorData.details).map(([key, value]: [string, any]) => {
+          if (Array.isArray(value)) {
+            return `${key}: ${value.join(', ')}`
+          }
+          return `${key}: ${value}`
+        })
+        displayMessage = detailsList.length > 0 ? detailsList.join('; ') : errorMessage
+      }
+      addNotification(displayMessage, 'error', { title: 'Error' })
     }
   }
 
@@ -95,11 +109,13 @@ export default function StudyProgramManagementPage() {
       setDeleteDialogOpen(false)
       setStudyProgramToDelete(null)
     } catch (error: any) {
-      const errorMessage = error?.response?.data?.error || error?.message || 'Failed to delete study program'
-      let displayMessage = errorMessage
-      if (errorMessage.includes('projects')) {
-        displayMessage = 'This study program has associated projects. Please delete or reassign the projects first.'
-      }
+      const errorData = error?.response?.data || {}
+      const errorMessage = errorData.error || error?.message || 'Failed to delete study program'
+      const errorDetails = errorData.details || errorMessage
+      
+      // Use the detailed message from backend if available, otherwise use the error message
+      const displayMessage = errorDetails || errorMessage
+      
       addNotification(displayMessage, 'error', { title: 'Cannot Delete Study Program' })
       setDeleteDialogOpen(false)
       setStudyProgramToDelete(null)
@@ -133,12 +149,12 @@ export default function StudyProgramManagementPage() {
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
         <div>
           <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 bg-gradient-to-br from-purple-500 to-pink-600 rounded-xl shadow-lg">
+            <div className="p-2 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg">
               <svg className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             </div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+            <h1 className="text-3xl font-bold bg-gradient-to-br from-blue-500 to-indigo-600 bg-clip-text text-transparent">
               Study Program Management
             </h1>
           </div>
@@ -146,13 +162,31 @@ export default function StudyProgramManagementPage() {
         </div>
         <button
           onClick={openCreateModal}
-          className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg hover:from-purple-700 hover:to-pink-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 shadow-lg hover:shadow-xl transition-all flex items-center gap-2 font-semibold"
+          className="px-6 py-3 bg-gradient-to-br from-blue-500 to-indigo-600 text-white rounded-lg hover:from-purple-700 hover:to-pink-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 shadow-lg hover:shadow-xl transition-all flex items-center gap-2 font-semibold"
         >
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
           </svg>
           Add Study Program
         </button>
+      </div>
+
+      {/* Info Message */}
+      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-6">
+        <div className="flex items-start">
+          <svg className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+          </svg>
+          <div className="text-sm text-blue-800 dark:text-blue-300">
+            <p className="font-semibold mb-1">Study Program Management Guidelines</p>
+            <ul className="list-disc list-inside space-y-1 text-blue-700 dark:text-blue-400">
+              <li>You can <strong>edit</strong> any study program&apos;s information (code, name, description)</li>
+              <li>Study programs with associated <strong>projects</strong> cannot be deleted to maintain data integrity</li>
+              <li>Study program codes must follow the format: 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)</li>
+              <li>Hover over disabled Delete buttons to see the reason</li>
+            </ul>
+          </div>
+        </div>
       </div>
 
       {/* Filters and Search */}

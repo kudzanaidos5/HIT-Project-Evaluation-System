@@ -162,7 +162,7 @@ export default function AnalyticsPage() {
     <div className={`page active ${isDarkMode ? 'dark' : ''}`}>
       <div className="page-header">
         <div className="page-title">
-          <h1>Evaluation Analytics</h1>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Evaluation Analytics</h1>
           <p className="page-subtitle">Comprehensive insights and performance metrics</p>
         </div>
         <div className="header-actions" style={{display: 'flex', gap: '12px', alignItems: 'center'}}>
@@ -176,7 +176,7 @@ export default function AnalyticsPage() {
             <option value="200">Level 200</option>
             <option value="400">Level 400</option>
           </select>
-          <select 
+          {/* <select 
             className="form-select" 
             style={{width: '200px'}}
             value={timeRange}
@@ -186,7 +186,7 @@ export default function AnalyticsPage() {
             <option value="last">Last Semester</option>
             <option value="year">Academic Year</option>
             <option value="all">All Time</option>
-          </select>
+          </select> */}
         </div>
       </div>
 

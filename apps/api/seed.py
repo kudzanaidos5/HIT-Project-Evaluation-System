@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app import create_app
 from app.extensions import db
-from app.models.models import User, UserRole, StudyProgram, Project, ProjectLevel, Student, Admin, Deadline
+from app.models.models import User, UserRole, StudyProgram, Project, ProjectLevel, Student, Admin, Deadline, ProjectStatus
 from datetime import datetime, timedelta
 
 def seed_database():
@@ -178,7 +178,7 @@ def seed_database():
                     level=project_data['level'],
                     study_program_id=study_program.id,
                     student_id=student_user.student_profile.id,
-                    status='pending'
+                    status=ProjectStatus.PENDING_APPROVAL
                 )
                 db.session.add(project)
         

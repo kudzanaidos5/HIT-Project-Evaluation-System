@@ -1,10 +1,10 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { useProject, useProjectEvaluations, useCreateEvaluation, useUpdateEvaluation, useEvaluationTemplates } from '../../../lib/hooks'
+import { useProject, useProjectEvaluations, useCreateEvaluation, useUpdateEvaluation, useEvaluationTemplates, useDeleteProject } from '../../../lib/hooks'
 import { useAuthStore, useUIStore } from '../../../lib/stores'
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import VerificationModal from '../../../components/VerificationModal'
 import { useQueryClient } from '@tanstack/react-query'
@@ -22,6 +22,7 @@ interface EvaluationFormData {
 
 export default function ProjectDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const queryClient = useQueryClient()
   const projectId = parseInt(params.id as string)
   const { user } = useAuthStore()
@@ -35,6 +36,35 @@ export default function ProjectDetailPage() {
   const presentationEvaluation = evaluationsData?.presentation_evaluation || null
   const allEvaluations = evaluationsData?.all_evaluations || []
   
+  // Helper function to calculate total score and max score from marks
+  const calculateScoreFromMarks = (evaluation: any) => {
+    if (!evaluation || !evaluation.marks || evaluation.marks.length === 0) {
+      return { totalScore: 0, maxScore: 0 }
+    }
+    const totalScore = evaluation.marks.reduce((sum: number, mark: any) => sum + (mark.score || 0), 0)
+    const maxScore = evaluation.marks.reduce((sum: number, mark: any) => sum + (mark.max_score || 0), 0)
+    return { totalScore, maxScore }
+  }
+  
+  // Helper function to get a specific mark by criterion name
+  const getMarkByCriterion = (evaluation: any, criterionName: string) => {
+    if (!evaluation || !evaluation.marks || evaluation.marks.length === 0) {
+      return null
+    }
+    // Try exact match first
+    let mark = evaluation.marks.find((m: any) => 
+      m.criterion_name?.toLowerCase() === criterionName.toLowerCase()
+    )
+    // If not found, try partial match (e.g., "code quality" matches "Code Quality")
+    if (!mark) {
+      mark = evaluation.marks.find((m: any) => 
+        m.criterion_name?.toLowerCase().includes(criterionName.toLowerCase()) ||
+        criterionName.toLowerCase().includes(m.criterion_name?.toLowerCase() || '')
+      )
+    }
+    return mark
+  }
+  
   // Evaluation form state
   const [evaluationModalOpen, setEvaluationModalOpen] = useState(false)
   const [evaluationType, setEvaluationType] = useState<'PROJECT' | 'PRESENTATION' | null>(null)
@@ -42,6 +72,7 @@ export default function ProjectDetailPage() {
   const { data: templates } = useEvaluationTemplates()
   const createEvaluationMutation = useCreateEvaluation()
   const updateEvaluationMutation = useUpdateEvaluation()
+  const deleteProjectMutation = useDeleteProject()
   const { register, handleSubmit, formState: { errors }, setValue, watch, reset } = useForm<EvaluationFormData>()
   
   const [verificationConfig, setVerificationConfig] = useState<{
@@ -52,6 +83,7 @@ export default function ProjectDetailPage() {
     tone?: 'info' | 'danger'
   } | null>(null)
   const [pendingAction, setPendingAction] = useState<EvaluationFormData | null>(null)
+  const [pendingDelete, setPendingDelete] = useState(false)
   const [verificationLoading, setVerificationLoading] = useState(false)
   
   // Get marks from form or evaluation
@@ -59,6 +91,12 @@ export default function ProjectDetailPage() {
   const watchedMarksArray = Array.isArray(watchedMarks) ? watchedMarks : []
   
   const openEvaluationModal = (type: 'PROJECT' | 'PRESENTATION', existingEvaluation?: any) => {
+    // Prevent evaluation of rejected projects
+    if (project?.status === 'rejected') {
+      addNotification('Cannot evaluate a rejected project. The student must create a new project.', 'error', { title: 'Evaluation Not Allowed' })
+      return
+    }
+    
     setEvaluationType(type)
     setEditingEvaluation(existingEvaluation || null)
     
@@ -124,7 +162,16 @@ export default function ProjectDetailPage() {
   }
   
   const handleEvaluationSubmit = (data: EvaluationFormData) => {
-    const totalScore = data.marks.reduce((sum, mark) => sum + (mark.score || 0), 0)
+    // Calculate total score and max score, ensuring numbers are used
+    const totalScore = data.marks.reduce((sum, mark) => {
+      const score = typeof mark.score === 'number' ? mark.score : parseFloat(mark.score) || 0
+      return sum + score
+    }, 0)
+    
+    const totalMaxScore = data.marks.reduce((sum, mark) => {
+      const maxScore = typeof mark.max_score === 'number' ? mark.max_score : parseFloat(mark.max_score) || 0
+      return sum + maxScore
+    }, 0)
     
     setPendingAction(data)
     setVerificationConfig({
@@ -132,7 +179,7 @@ export default function ProjectDetailPage() {
       description: editingEvaluation 
         ? `You are about to update the evaluation for ${project?.title || 'this project'}.`
         : `You are about to finalize ${data.marks.length} criteria for ${project?.title || 'this project'}. Students will be notified once this evaluation is saved.`,
-      highlight: `Scores to ${editingEvaluation ? 'update' : 'publish'}: ${totalScore} points • ${data.marks.length} criteria.`,
+      highlight: `Scores to ${editingEvaluation ? 'update' : 'publish'}: ${totalScore} / ${totalMaxScore} points • ${data.marks.length} criteria.`,
       confirmLabel: editingEvaluation ? 'Update evaluation' : 'Submit and notify student',
       tone: 'info',
     })
@@ -144,19 +191,29 @@ export default function ProjectDetailPage() {
     try {
       setVerificationLoading(true)
       
+      // Ensure marks are properly formatted with numeric values
+      const formattedMarks = pendingAction.marks.map((mark: any) => ({
+        criterion_name: mark.criterion_name,
+        max_score: typeof mark.max_score === 'number' ? mark.max_score : parseFloat(mark.max_score) || 0,
+        score: typeof mark.score === 'number' ? mark.score : parseFloat(mark.score) || 0,
+        comments: mark.comments || ''
+      }))
+      
       if (editingEvaluation) {
-        // Update existing evaluation
+        // Update existing evaluation - pass projectId so the hook can invalidate the right queries
         await updateEvaluationMutation.mutateAsync({
           evaluationId: editingEvaluation.id,
+          projectId: projectId, // Pass projectId explicitly
           data: {
-            comments: pendingAction.comments,
-            marks: pendingAction.marks,
+            comments: pendingAction.comments || '',
+            marks: formattedMarks,
           }
         })
         
         addNotification('Evaluation updated successfully.', 'success', {
           title: 'Evaluation updated',
           audience: 'ADMIN',
+          persistent: true,
         })
       } else {
         // Create new evaluation
@@ -164,14 +221,15 @@ export default function ProjectDetailPage() {
           projectId: projectId,
           data: {
             evaluation_type: pendingAction.evaluationType,
-            comments: pendingAction.comments,
-            marks: pendingAction.marks,
+            comments: pendingAction.comments || '',
+            marks: formattedMarks,
           },
         })
         
         addNotification('Evaluation submitted successfully.', 'success', {
           title: 'Evaluation sent',
           audience: 'ADMIN',
+          persistent: true,
         })
       }
       
@@ -179,13 +237,14 @@ export default function ProjectDetailPage() {
       setVerificationConfig(null)
       setPendingAction(null)
       
-      // Refresh evaluations and project data
-      queryClient.invalidateQueries({ queryKey: ['projects', projectId] })
-      queryClient.invalidateQueries({ queryKey: ['evaluations'] })
+      // Mutation hooks handle invalidation and refetching automatically
+      // No need to manually refetch here
     } catch (error: any) {
+      console.error('Evaluation submission error:', error)
       addNotification(error?.response?.data?.error || error?.message || 'Failed to submit evaluation.', 'error', {
-        title: 'Submission failed',
+        title: editingEvaluation ? 'Update failed' : 'Submission failed',
         audience: 'ADMIN',
+        persistent: true,
       })
     } finally {
       setVerificationLoading(false)
@@ -196,6 +255,49 @@ export default function ProjectDetailPage() {
     if (verificationLoading) return
     setVerificationConfig(null)
     setPendingAction(null)
+    setPendingDelete(false)
+  }
+
+  const handleDeleteProject = () => {
+    setPendingDelete(true)
+    setVerificationConfig({
+      title: 'Delete Project',
+      description: `You are about to permanently delete "${project?.title || 'this project'}". This action cannot be undone.`,
+      highlight: projectEvaluation || presentationEvaluation 
+        ? 'Warning: This project has evaluations. You must delete the evaluations first before deleting the project.'
+        : 'All project data, including student submissions, will be permanently removed.',
+      confirmLabel: 'Delete Project',
+      tone: 'danger',
+    })
+  }
+
+  const executeDeleteProject = async () => {
+    if (!pendingDelete) return
+    
+    try {
+      setVerificationLoading(true)
+      
+      await deleteProjectMutation.mutateAsync(projectId)
+      
+      addNotification('Project deleted successfully.', 'success', {
+        title: 'Project deleted',
+        audience: 'ADMIN',
+        persistent: true,
+      })
+      
+      // Navigate to projects list
+      router.push('/projects')
+    } catch (error: any) {
+      const errorMessage = error?.response?.data?.error || error?.message || 'Failed to delete project.'
+      addNotification(errorMessage, 'error', {
+        title: 'Deletion failed',
+        audience: 'ADMIN',
+        persistent: true,
+      })
+      setVerificationLoading(false)
+      setPendingDelete(false)
+      setVerificationConfig(null)
+    }
   }
 
   if (projectError) {
@@ -291,7 +393,9 @@ export default function ProjectDetailPage() {
                 {!projectEvaluation && (
                   <button
                     onClick={() => openEvaluationModal('PROJECT')}
-                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                    disabled={project?.status === 'rejected'}
+                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                   >
                     <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -302,7 +406,9 @@ export default function ProjectDetailPage() {
                 {!presentationEvaluation && (
                   <button
                     onClick={() => openEvaluationModal('PRESENTATION')}
-                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+                    disabled={project?.status === 'rejected'}
+                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                   >
                     <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
@@ -310,6 +416,15 @@ export default function ProjectDetailPage() {
                     Evaluate Presentation
                   </button>
                 )}
+                <button
+                  onClick={handleDeleteProject}
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                >
+                  <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Delete Project
+                </button>
               </>
             )}
             <Link
@@ -338,13 +453,44 @@ export default function ProjectDetailPage() {
                 <div>
                   <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
                   <dd className="mt-1">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                      project.status === 'evaluated' 
-                        ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' 
-                        : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
-                    }`}>
-                      {project.status === 'evaluated' ? 'Evaluated' : 'Pending'}
-                    </span>
+                    {(() => {
+                      const status = project.status || 'draft'
+                      const statusConfig: Record<string, { label: string; className: string }> = {
+                        'pending_approval': {
+                          label: 'Pending Approval',
+                          className: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200'
+                        },
+                        'draft': {
+                          label: 'Draft',
+                          className: 'bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-200'
+                        },
+                        'submitted': {
+                          label: 'Submitted',
+                          className: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200'
+                        },
+                        'under_review': {
+                          label: 'Under Review',
+                          className: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200'
+                        },
+                        'evaluated': {
+                          label: 'Evaluated',
+                          className: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                        },
+                        'rejected': {
+                          label: 'Rejected',
+                          className: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                        }
+                      }
+                      const config = statusConfig[status] || {
+                        label: 'Unknown',
+                        className: 'bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-200'
+                      }
+                      return (
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.className}`}>
+                          {config.label}
+                        </span>
+                      )
+                    })()}
                   </dd>
                 </div>
                 <div>
@@ -367,9 +513,11 @@ export default function ProjectDetailPage() {
                 </div>
               </dl>
               {project.description && (
-                <div className="mt-6">
-                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Description</dt>
-                  <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{project.description}</dd>
+                <div className="mt-6 min-w-0 col-span-full">
+                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Description</dt>
+                  <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100 break-words whitespace-pre-wrap leading-relaxed p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 max-h-96 overflow-y-auto">
+                    {project.description}
+                  </dd>
                 </div>
               )}
               
@@ -430,27 +578,24 @@ export default function ProjectDetailPage() {
             <div className="px-6 py-4">
               <dl className="space-y-4">
                 <div>
-                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Project Evaluation</dt>
+                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Overall Score</dt>
                   <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">
                     {evaluationsLoading ? (
                       <div className="animate-pulse bg-gray-200 dark:bg-gray-800 h-8 w-16 rounded"></div>
-                    ) : projectEvaluation ? (
-                      `${projectEvaluation.total_score.toFixed(1)}%`
-                    ) : (
-                      <span className="text-sm text-gray-400 dark:text-gray-500">Pending</span>
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Presentation Evaluation</dt>
-                  <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">
-                    {evaluationsLoading ? (
-                      <div className="animate-pulse bg-gray-200 dark:bg-gray-800 h-8 w-16 rounded"></div>
-                    ) : presentationEvaluation ? (
-                      `${presentationEvaluation.total_score.toFixed(1)}%`
-                    ) : (
-                      <span className="text-sm text-gray-400 dark:text-gray-500">Pending</span>
-                    )}
+                    ) : (() => {
+                      const projectScores = projectEvaluation ? calculateScoreFromMarks(projectEvaluation) : { totalScore: 0, maxScore: 0 }
+                      const presentationScores = presentationEvaluation ? calculateScoreFromMarks(presentationEvaluation) : { totalScore: 0, maxScore: 0 }
+                      
+                      const totalScore = projectScores.totalScore + presentationScores.totalScore
+                      const totalMaxScore = projectScores.maxScore + presentationScores.maxScore
+                      
+                      if (totalMaxScore === 0) {
+                        return <span className="text-sm text-gray-400 dark:text-gray-500">Pending</span>
+                      }
+                      
+                      const percentage = (totalScore / totalMaxScore) * 100
+                      return `${percentage.toFixed(1)}%`
+                    })()}
                   </dd>
                 </div>
                 <div>
@@ -458,23 +603,47 @@ export default function ProjectDetailPage() {
                   <dd className="mt-1 text-xl font-semibold text-gray-900 dark:text-gray-100">
                     {evaluationsLoading ? (
                       <div className="animate-pulse bg-gray-200 dark:bg-gray-800 h-8 w-12 rounded"></div>
-                    ) : projectEvaluation?.grade ? (
-                      <span className={`px-3 py-1 rounded-full text-sm ${
-                        projectEvaluation.grade === 'A'
-                          ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
-                          : projectEvaluation.grade === 'B'
-                            ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200'
-                            : projectEvaluation.grade === 'C'
-                              ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
-                              : projectEvaluation.grade === 'D'
-                                ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200'
-                                : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
-                      }`}>
-                        {projectEvaluation.grade}
-                      </span>
-                    ) : (
-                      <span className="text-sm text-gray-400 dark:text-gray-500">N/A</span>
-                    )}
+                    ) : (() => {
+                      const projectScores = projectEvaluation ? calculateScoreFromMarks(projectEvaluation) : { totalScore: 0, maxScore: 0 }
+                      const presentationScores = presentationEvaluation ? calculateScoreFromMarks(presentationEvaluation) : { totalScore: 0, maxScore: 0 }
+                      
+                      const totalScore = projectScores.totalScore + presentationScores.totalScore
+                      const totalMaxScore = projectScores.maxScore + presentationScores.maxScore
+                      
+                      if (totalMaxScore === 0) {
+                        return <span className="text-sm text-gray-400 dark:text-gray-500">N/A</span>
+                      }
+                      
+                      const percentage = (totalScore / totalMaxScore) * 100
+                      
+                      // Calculate grade based on combined percentage
+                      let grade = 'F'
+                      if (percentage >= 90) {
+                        grade = 'A'
+                      } else if (percentage >= 80) {
+                        grade = 'B'
+                      } else if (percentage >= 70) {
+                        grade = 'C'
+                      } else if (percentage >= 60) {
+                        grade = 'D'
+                      }
+                      
+                      return (
+                        <span className={`px-3 py-1 rounded-full text-sm ${
+                          grade === 'A'
+                            ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                            : grade === 'B'
+                              ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200'
+                              : grade === 'C'
+                                ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200'
+                                : grade === 'D'
+                                  ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200'
+                                  : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                        }`}>
+                          {grade}
+                        </span>
+                      )
+                    })()}
                   </dd>
                 </div>
                 <div>
@@ -564,23 +733,37 @@ export default function ProjectDetailPage() {
                     <>
                       <div className="mb-3">
                         <div className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-1">
-                          {projectEvaluation.total_score.toFixed(1)}%
+                          {(() => {
+                            const { totalScore, maxScore } = calculateScoreFromMarks(projectEvaluation)
+                            return `${totalScore}/${maxScore}`
+                          })()}
                         </div>
                         <div className="text-sm text-gray-500 dark:text-gray-400">Overall Score</div>
                       </div>
                       <div className="space-y-2 mb-3">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">Code Quality:</span>
-                          <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.code_quality || 0}/20</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">Documentation:</span>
-                          <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.documentation_score || 0}/20</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">Functionality:</span>
-                          <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.functionality_score || 0}/30</span>
-                        </div>
+                        {projectEvaluation.marks && projectEvaluation.marks.length > 0 ? (
+                          projectEvaluation.marks.map((mark: any, index: number) => (
+                            <div key={index} className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">{mark.criterion_name}:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{mark.score || 0}/{mark.max_score || 0}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">Code Quality:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.code_quality || 0}/20</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">Documentation:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.documentation_score || 0}/20</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">Functionality:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.functionality_score || 0}/30</span>
+                            </div>
+                          </>
+                        )}
                       </div>
                       {projectEvaluation.comments && (
                         <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
@@ -595,7 +778,9 @@ export default function ProjectDetailPage() {
                         {isAdmin && (
                           <button
                             onClick={() => openEvaluationModal('PROJECT', projectEvaluation)}
-                            className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium"
+                            disabled={project?.status === 'rejected'}
+                            className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                           >
                             Edit
                           </button>
@@ -608,7 +793,9 @@ export default function ProjectDetailPage() {
                       {isAdmin && (
                         <button
                           onClick={() => openEvaluationModal('PROJECT')}
-                          className="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+                          disabled={project?.status === 'rejected'}
+                          className="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                         >
                           Create Project Evaluation
                         </button>
@@ -640,23 +827,37 @@ export default function ProjectDetailPage() {
                     <>
                       <div className="mb-3">
                         <div className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-1">
-                          {presentationEvaluation.total_score.toFixed(1)}%
+                          {(() => {
+                            const { totalScore, maxScore } = calculateScoreFromMarks(presentationEvaluation)
+                            return `${totalScore}/${maxScore}`
+                          })()}
                         </div>
                         <div className="text-sm text-gray-500 dark:text-gray-400">Overall Score</div>
                       </div>
                       <div className="space-y-2 mb-3">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">Clarity & Communication:</span>
-                          <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.clarity_communication || 0}/10</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">Visual Presentation:</span>
-                          <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.visual_presentation || 0}/10</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">Technical Explanation:</span>
-                          <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.technical_explanation || 0}/10</span>
-                        </div>
+                        {presentationEvaluation.marks && presentationEvaluation.marks.length > 0 ? (
+                          presentationEvaluation.marks.map((mark: any, index: number) => (
+                            <div key={index} className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">{mark.criterion_name}:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{mark.score || 0}/{mark.max_score || 0}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">Clarity & Communication:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.clarity_communication || 0}/10</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">Visual Presentation:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.visual_presentation || 0}/10</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">Technical Explanation:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.technical_explanation || 0}/10</span>
+                            </div>
+                          </>
+                        )}
                       </div>
                       {presentationEvaluation.comments && (
                         <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
@@ -671,7 +872,9 @@ export default function ProjectDetailPage() {
                         {isAdmin && (
                           <button
                             onClick={() => openEvaluationModal('PRESENTATION', presentationEvaluation)}
-                            className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium"
+                            disabled={project?.status === 'rejected'}
+                            className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                           >
                             Edit
                           </button>
@@ -684,7 +887,9 @@ export default function ProjectDetailPage() {
                       {isAdmin && (
                         <button
                           onClick={() => openEvaluationModal('PRESENTATION')}
-                          className="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"
+                          disabled={project?.status === 'rejected'}
+                          className="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                         >
                           Create Presentation Evaluation
                         </button>
@@ -867,8 +1072,8 @@ export default function ProjectDetailPage() {
         highlight={verificationConfig?.highlight}
         confirmLabel={verificationConfig?.confirmLabel || 'Confirm'}
         tone={verificationConfig?.tone || 'info'}
-        loading={verificationLoading || createEvaluationMutation.isPending || updateEvaluationMutation.isPending}
-        onConfirm={executePendingAction}
+        loading={verificationLoading || createEvaluationMutation.isPending || updateEvaluationMutation.isPending || deleteProjectMutation.isPending}
+        onConfirm={pendingDelete ? executeDeleteProject : executePendingAction}
         onCancel={closeVerificationModal}
       />
     </div>

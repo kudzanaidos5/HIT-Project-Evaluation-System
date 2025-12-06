@@ -3,8 +3,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import { useQueryClient } from '@tanstack/react-query'
 import NotificationsDropdown from '../components/NotificationsDropdown'
 import { useAuthStore, useUIStore, useThemeStore, NotificationItem } from '../lib/stores'
+import { notificationsAPI } from '../lib/api'
 import { useChangePassword } from '../lib/hooks'
 
 // Live Date and Time Component
@@ -32,7 +34,7 @@ const LiveDateTime = () => {
       hour: '2-digit', 
       minute: '2-digit', 
       second: '2-digit',
-      hour12: true 
+      hour12: false 
     })
   }
   
@@ -85,8 +87,9 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
         timestamp: new Date(now - 15 * 60 * 1000),
         read: false,
         actionLabel: 'Open queue',
-        actionUrl: '/projects/pending',
+        actionUrl: '/projects',
         audience: 'ADMIN',
+        persistent: true,  // Default notifications should persist
       },
       {
         id: 'admin-2',
@@ -98,6 +101,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
         actionLabel: 'Review timeline',
         actionUrl: '/deadlines',
         audience: 'ADMIN',
+        persistent: true,
       },
       {
         id: 'admin-3',
@@ -109,6 +113,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
         actionLabel: 'View analytics',
         actionUrl: '/analytics',
         audience: 'ADMIN',
+        persistent: true,
       },
     ]
   }
@@ -124,6 +129,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
       actionLabel: 'View feedback',
       actionUrl: '/dashboard',
       audience: 'STUDENT',
+      persistent: true,
     },
     {
       id: 'student-2',
@@ -135,6 +141,7 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
       actionLabel: 'Update submission',
       actionUrl: '/projects',
       audience: 'STUDENT',
+      persistent: true,
     },
     {
       id: 'student-3',
@@ -146,29 +153,67 @@ const buildDefaultNotifications = (role: 'ADMIN' | 'STUDENT'): NotificationItem[
       actionLabel: 'Go to dashboard',
       actionUrl: '/dashboard',
       audience: 'STUDENT',
+      persistent: true,
     },
   ]
 }
 
 // Account Management Menu Item Component
-function AccountManagementMenuItem({ onClose }: { onClose: () => void }) {
+function AccountManagementMenuItem({ 
+  onClose, 
+  onOpenModal 
+}: { 
+  onClose: () => void
+  onOpenModal: () => void 
+}) {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  const handleOpenModal = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Close dropdown first
+    onClose()
+    // Then open modal after a brief delay to ensure dropdown closes
+    setTimeout(() => {
+      onOpenModal()
+    }, 50)
+  }
+
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      onMouseDown={(e) => {
+        // Prevent dropdown from closing when clicking this button
+        e.stopPropagation()
+      }}
+      onClick={handleOpenModal}
+      className="w-full flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer"
+    >
+      <svg className="mr-3 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+      Account Settings
+    </button>
+  )
+}
+
+// Account Management Modal Component
+function AccountManagementModal({ 
+  isOpen, 
+  onClose 
+}: { 
+  isOpen: boolean
+  onClose: () => void 
+}) {
   const { user } = useAuthStore()
   const { addNotification } = useUIStore()
-  const [isModalOpen, setIsModalOpen] = useState(false)
   const [showPasswordForm, setShowPasswordForm] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const changePasswordMutation = useChangePassword()
-
-  const handleOpenModal = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault()
-    e.stopPropagation()
-    console.log('Account Settings clicked, opening modal') // Debug log
-    setIsModalOpen(true)
-    console.log('Modal state set to:', true, 'isModalOpen:', isModalOpen) // Debug log
-    onClose()
-  }
 
   const handleChangePassword = async () => {
     if (!currentPassword || !newPassword || !confirmPassword) {
@@ -199,183 +244,156 @@ function AccountManagementMenuItem({ onClose }: { onClose: () => void }) {
     }
   }
 
+  if (!isOpen) return null
+
   return (
-    <>
-      <button
-        type="button"
-        onMouseDown={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          handleOpenModal(e as any)
-        }}
-        onClick={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          handleOpenModal(e)
-        }}
-        className="w-full flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-      >
-        <svg className="mr-3 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
-        Account Settings
-      </button>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="p-6 border-b border-gray-200 dark:border-gray-800">
+          <div className="flex items-center justify-between">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Account Management</h2>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
 
-      {isModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}>
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-                <div className="p-6 border-b border-gray-200 dark:border-gray-800">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Account Management</h2>
-                    <button
-                      onClick={() => setIsModalOpen(false)}
-                      className="p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-                    >
-                      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="p-6 space-y-6">
-                  {/* Account Info */}
-                  <div className="space-y-4">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Account Information</h3>
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Name</label>
-                        <div className="mt-1 text-base text-gray-900 dark:text-white">{user?.name}</div>
-                      </div>
-                      <div>
-                        <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Email</label>
-                        <div className="mt-1 text-base text-gray-900 dark:text-white">{user?.email}</div>
-                      </div>
-                      <div>
-                        <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Role</label>
-                        <div className="mt-1">
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                            {user?.role}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Password Change */}
-                  {!user?.is_oauth_user && (
-                    <div className="space-y-4 border-t border-gray-200 dark:border-gray-800 pt-6">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Change Password</h3>
-                        <button
-                          onClick={() => setShowPasswordForm(!showPasswordForm)}
-                          className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
-                        >
-                          {showPasswordForm ? 'Cancel' : 'Change Password'}
-                        </button>
-                      </div>
-
-                      {showPasswordForm && (
-                        <div className="space-y-4">
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                              Current Password
-                            </label>
-                            <input
-                              type="password"
-                              value={currentPassword}
-                              onChange={(e) => setCurrentPassword(e.target.value)}
-                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                              placeholder="Enter current password"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                              New Password
-                            </label>
-                            <input
-                              type="password"
-                              value={newPassword}
-                              onChange={(e) => setNewPassword(e.target.value)}
-                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                              placeholder="Enter new password (min. 6 characters)"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                              Confirm New Password
-                            </label>
-                            <input
-                              type="password"
-                              value={confirmPassword}
-                              onChange={(e) => setConfirmPassword(e.target.value)}
-                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                              placeholder="Confirm new password"
-                            />
-                          </div>
-                          <button
-                            onClick={handleChangePassword}
-                            disabled={changePasswordMutation.isPending}
-                            className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {changePasswordMutation.isPending ? 'Changing...' : 'Change Password'}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {user?.is_oauth_user && (
-                    <div className="border-t border-gray-200 dark:border-gray-800 pt-6">
-                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                        <p className="text-sm text-blue-800 dark:text-blue-200">
-                          You signed in with Google. Password changes are managed through your Google account.
-                        </p>
-                      </div>
-                    </div>
-                  )}
+        <div className="p-6 space-y-6">
+          {/* Account Info */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Account Information</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Name</label>
+                <div className="mt-1 text-base text-gray-900 dark:text-white">{user?.name}</div>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Email</label>
+                <div className="mt-1 text-base text-gray-900 dark:text-white">{user?.email}</div>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Role</label>
+                <div className="mt-1">
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                    {user?.role}
+                  </span>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* Password Change */}
+          {!user?.is_oauth_user && (
+            <div className="space-y-4 border-t border-gray-200 dark:border-gray-800 pt-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Change Password</h3>
+                <button
+                  onClick={() => setShowPasswordForm(!showPasswordForm)}
+                  className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
+                >
+                  {showPasswordForm ? 'Cancel' : 'Change Password'}
+                </button>
+              </div>
+
+              {showPasswordForm && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Current Password
+                    </label>
+                    <input
+                      type="password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Enter current password"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      New Password
+                    </label>
+                    <input
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Enter new password (min. 6 characters)"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Confirm New Password
+                    </label>
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Confirm new password"
+                    />
+                  </div>
+                  <button
+                    onClick={handleChangePassword}
+                    disabled={changePasswordMutation.isPending}
+                    className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {changePasswordMutation.isPending ? 'Changing...' : 'Change Password'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {user?.is_oauth_user && (
+            <div className="border-t border-gray-200 dark:border-gray-800 pt-6">
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                <p className="text-sm text-blue-800 dark:text-blue-200">
+                  You signed in with Google. Password changes are managed through your Google account.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
-      )}
-    </>
+      </div>
+    </div>
   )
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  const queryClient = useQueryClient()
   const { user, isAuthenticated, logout, checkAuth } = useAuthStore()
   const {
     sidebarExpanded,
-    projectsMenuOpen,
     settingsMenuOpen,
     toggleSidebar,
-    toggleProjectsMenu,
     toggleSettingsMenu,
     notifications,
     setNotifications,
     markNotificationRead,
     markAllNotificationsRead,
+    fetchNotifications,
+    syncNotifications,
   } = useUIStore()
   const { isDarkMode, toggleDarkMode } = useThemeStore()
   const isAdmin = user?.role === 'ADMIN'
 
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [accountModalOpen, setAccountModalOpen] = useState(false)
   const notificationsRef = useRef<HTMLDivElement | null>(null)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
   const lastRoleRef = useRef<'ADMIN' | 'STUDENT' | null>(null)
+  const lastUserIdRef = useRef<number | null>(null)
 
-  // Wrapper functions to auto-expand sidebar when clicking Projects or Settings
-  const handleProjectsToggle = () => {
-    if (!sidebarExpanded) {
-      toggleSidebar()
-    }
-    toggleProjectsMenu()
-  }
-
+  // Wrapper function to auto-expand sidebar when clicking Settings
   const handleSettingsToggle = () => {
     if (!sidebarExpanded) {
       toggleSidebar()
@@ -397,36 +415,72 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   // Close user menu when clicking outside
   useEffect(() => {
+    if (!userMenuOpen) return
+    
     const handleClickOutside = (event: MouseEvent) => {
-      if (userMenuOpen && userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
-        setUserMenuOpen(false)
+      if (userMenuRef.current) {
+        const target = event.target as HTMLElement
+        // Check if click is on Account Settings button - if so, don't close
+        const isAccountSettingsButton = target.closest('button')?.textContent?.trim().includes('Account Settings')
+        // Check if click is outside the dropdown menu
+        if (!userMenuRef.current.contains(target) && !isAccountSettingsButton) {
+          setUserMenuOpen(false)
+        }
       }
     }
     
-    if (userMenuOpen) {
-      // Use a small delay to allow button clicks to register first
-      setTimeout(() => {
-        document.addEventListener('click', handleClickOutside)
-      }, 0)
-      return () => document.removeEventListener('click', handleClickOutside)
+    // Use a longer delay to ensure button clicks process first
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('click', handleClickOutside)
+    }, 100)
+    
+    return () => {
+      clearTimeout(timeoutId)
+      document.removeEventListener('click', handleClickOutside)
     }
   }, [userMenuOpen])
 
   useEffect(() => {
     if (!user) {
-      if (notifications.length) {
-        setNotifications([])
-      }
+      // Clear notifications and reset refs when user logs out
+      setNotifications([])
       lastRoleRef.current = null
+      lastUserIdRef.current = null
       return
     }
 
     const roleChanged = lastRoleRef.current !== user.role
-    if (roleChanged || notifications.length === 0) {
-      setNotifications(buildDefaultNotifications(user.role))
+    const userChanged = lastUserIdRef.current !== user.id
+    const isInitialLoad = lastRoleRef.current === null || lastUserIdRef.current === null
+    
+    // Fetch real notifications from API on initial load, user change, or role change
+    if (roleChanged || userChanged || isInitialLoad) {
+      fetchNotifications().catch(() => {
+        // Fallback to mock notifications if API fails
+        const defaultNotifications = buildDefaultNotifications(user.role)
+        setNotifications(defaultNotifications)
+      })
+      
       lastRoleRef.current = user.role
+      lastUserIdRef.current = user.id
     }
-  }, [notifications.length, setNotifications, user])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setNotifications, user, fetchNotifications])  // Only depend on user changes, not notifications changes
+
+  // Poll for notification updates every 30 seconds
+  useEffect(() => {
+    if (!user || !isAuthenticated) return
+
+    // Initial sync
+    syncNotifications()
+
+    // Poll for updates every 30 seconds
+    const intervalId = setInterval(() => {
+      syncNotifications()
+    }, 30000)
+
+    return () => clearInterval(intervalId)
+  }, [user, isAuthenticated, syncNotifications])
 
   useEffect(() => {
     if (!notificationsOpen) return
@@ -445,15 +499,53 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     router.push('/login')
   }
 
-  const handleNotificationSelect = (notification: NotificationItem) => {
+  const handleNotificationSelect = async (notification: NotificationItem) => {
+    // Mark as read in API if it's a persistent notification
+    if (notification.persistent) {
+      try {
+        await notificationsAPI.markAsRead(notification.id)
+      } catch (error) {
+        console.error('Failed to mark notification as read:', error)
+      }
+    }
+    
     markNotificationRead(notification.id)
     setNotificationsOpen(false)
+    
+    // If this is an evaluation-related notification, invalidate student dashboard queries
+    // to ensure the student sees the updated evaluation data immediately
+    if (notification.title?.includes('Evaluation') || notification.message?.includes('evaluated')) {
+      // Invalidate student dashboard and project queries to force refetch
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
+      
+      // Also dispatch event for StudentDashboard component to listen to
+      if (notification.actionUrl?.includes('/dashboard')) {
+        setTimeout(() => {
+          window.dispatchEvent(new Event('dashboard-refresh'))
+        }, 100)
+      }
+    }
+    
     if (notification.actionUrl) {
       router.push(notification.actionUrl)
     }
   }
 
-  const handleMarkVisibleNotificationsRead = () => {
+  const handleMarkVisibleNotificationsRead = async () => {
+    // Mark all persistent notifications as read in API
+    const persistentUnread = scopedNotifications.filter(
+      n => !n.read && n.persistent
+    )
+    
+    if (persistentUnread.length > 0) {
+      try {
+        await notificationsAPI.markAllAsRead()
+      } catch (error) {
+        console.error('Failed to mark all notifications as read:', error)
+      }
+    }
+    
     scopedNotifications.forEach((notification) => {
       if (!notification.read) {
         markNotificationRead(notification.id)
@@ -599,14 +691,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 {userMenuOpen && (
                   <div 
                     className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 z-50"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => {
+                      // Only stop propagation if not clicking a button
+                      if ((e.target as HTMLElement).tagName !== 'BUTTON') {
+                        e.stopPropagation()
+                      }
+                    }}
                   >
                     <div className="px-4 py-2 border-b border-gray-100 dark:border-gray-700">
                       <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{user?.name}</p>
                       <p className="text-xs text-gray-500 dark:text-gray-400">{user?.email}</p>
                 </div>
-                <AccountManagementMenuItem onClose={() => setUserMenuOpen(false)} />
+                <AccountManagementMenuItem 
+                  onClose={() => setUserMenuOpen(false)} 
+                  onOpenModal={() => setAccountModalOpen(true)}
+                />
                 <button 
                   onClick={handleLogout}
                       className="w-full flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
@@ -646,71 +745,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </Link>
 
               {/* 2. Projects */}
-              <div className="space-y-1 mt-2">
-                <button
-                  onClick={handleProjectsToggle}
-                  className={`group flex items-center ${sidebarExpanded ? 'px-3 py-2.5' : 'px-2 py-2 justify-center'} text-sm font-medium rounded-lg w-full transition-all ${
-                    pathname?.startsWith('/projects')
-                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
-                      : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
-                  }`}
-                >
-                  <svg className={`${sidebarExpanded ? 'mr-3' : ''} h-6 w-6 ${
-                    pathname?.startsWith('/projects')
-                      ? 'text-white'
-                      : 'text-gray-400 dark:text-gray-500 group-hover:text-gray-600 dark:group-hover:text-gray-300'
-                  }`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  {sidebarExpanded && (
-                    <>
-                      <span>Projects</span>
-                      <svg className={`ml-auto h-4 w-4 ${
-                        pathname?.startsWith('/projects')
-                          ? 'text-white'
-                          : 'text-gray-400 dark:text-gray-500'
-                      } transition-transform ${projectsMenuOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                      </svg>
-                    </>
-                  )}
-                </button>
-                
-                {projectsMenuOpen && sidebarExpanded && (
-                  <div className="ml-3 space-y-1">
-                    <Link 
-                      href="/projects" 
-                      className={`block px-3 py-1.5 text-sm rounded-md transition-all ${
-                        pathname === '/projects'
-                          ? 'bg-blue-600/20 text-blue-700 dark:text-blue-400 font-medium'
-                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      All Projects
-                    </Link>
-                    <Link 
-                      href="/projects/pending" 
-                      className={`block px-3 py-1.5 text-sm rounded-md transition-all ${
-                        pathname === '/projects/pending'
-                          ? 'bg-blue-600/20 text-blue-700 dark:text-blue-400 font-medium'
-                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      Pending
-                    </Link>
-                    <Link 
-                      href="/projects/evaluated" 
-                      className={`block px-3 py-1.5 text-sm rounded-md transition-all ${
-                        pathname === '/projects/evaluated'
-                          ? 'bg-blue-600/20 text-blue-700 dark:text-blue-400 font-medium'
-                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      Evaluated
-                    </Link>
-                  </div>
-                )}
-              </div>
+              <Link 
+                href="/projects" 
+                className={`group flex items-center ${sidebarExpanded ? 'px-3 py-2.5' : 'px-2 py-2 justify-center'} text-sm font-medium rounded-lg transition-all mt-2 ${
+                  pathname?.startsWith('/projects') 
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md' 
+                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                <svg className={`${sidebarExpanded ? 'mr-3' : ''} h-6 w-6 ${pathname?.startsWith('/projects') ? 'text-white' : 'text-gray-400 dark:text-gray-500 group-hover:text-gray-600 dark:group-hover:text-gray-300'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                {sidebarExpanded && 'Projects'}
+              </Link>
 
               {/* 3. Deadlines */}
               <Link 
@@ -799,6 +846,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     >
                       Study Program Management
                     </Link>
+                    <Link 
+                      href="/grade-classification" 
+                      className={`block px-3 py-1.5 text-sm rounded-md transition-all ${
+                        pathname === '/grade-classification'
+                          ? 'bg-blue-600/20 text-blue-700 dark:text-blue-400 font-medium'
+                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      Grade Classification
+                    </Link>
                   </div>
                 )}
                 </div>
@@ -813,6 +870,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </div>
+
+      {/* Account Management Modal */}
+      <AccountManagementModal 
+        isOpen={accountModalOpen} 
+        onClose={() => setAccountModalOpen(false)} 
+      />
     </div>
   )
 }

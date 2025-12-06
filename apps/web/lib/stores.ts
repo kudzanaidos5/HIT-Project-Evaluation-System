@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { authAPI, getTokens, clearTokens } from './api'
+import { authAPI, getTokens, clearTokens, notificationsAPI } from './api'
 
 export type NotificationType = 'success' | 'error' | 'info' | 'warning'
 export type NotificationAudience = 'ADMIN' | 'STUDENT' | 'ALL'
@@ -15,6 +15,7 @@ export interface NotificationItem {
   actionUrl?: string
   audience?: NotificationAudience
   userId?: number  // Optional: if set, only this user will see the notification
+  persistent?: boolean  // If true, notification won't auto-remove. Defaults to false.
 }
 
 export interface User {
@@ -45,6 +46,7 @@ export interface UIState {
   evaluationModalOpen: boolean
   selectedProject: any | null
   notifications: NotificationItem[]
+  notificationTimeouts: Map<string, NodeJS.Timeout>  // Store timeout IDs for cleanup
   toggleSidebar: () => void
   toggleProjectsMenu: () => void
   toggleSettingsMenu: () => void
@@ -60,11 +62,16 @@ export interface UIState {
       actionUrl?: string
       audience?: NotificationAudience
       userId?: number
+      persistent?: boolean  // If true, notification won't auto-remove
+      autoRemoveDelay?: number  // Custom auto-remove delay in ms (default: 5000)
     }
   ) => void
   markNotificationRead: (id: string) => void
   markAllNotificationsRead: () => void
   removeNotification: (id: string) => void
+  clearAllNotificationTimeouts: () => void
+  fetchNotifications: () => Promise<void>
+  syncNotifications: () => Promise<void>
 }
 
 export interface ThemeState {
@@ -161,6 +168,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 }))
 
+// Helper function to generate unique notification IDs
+const generateNotificationId = (): string => {
+  // Use crypto.randomUUID if available, otherwise fall back to timestamp + random
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  // Fallback: timestamp + random number to prevent collisions
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
+}
+
 // UI Store
 export const useUIStore = create<UIState>((set, get) => ({
   sidebarExpanded: false,
@@ -169,6 +186,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   evaluationModalOpen: false,
   selectedProject: null,
   notifications: [],
+  notificationTimeouts: new Map<string, NodeJS.Timeout>(),
 
   toggleSidebar: () => {
     set((state) => ({ sidebarExpanded: !state.sidebarExpanded }))
@@ -197,16 +215,42 @@ export const useUIStore = create<UIState>((set, get) => ({
   },
 
   setNotifications: (notifications: NotificationItem[]) => {
-    set({ notifications })
+    // Clear timeouts for notifications that are being removed
+    const currentNotifications = get().notifications
+    const currentTimeouts = get().notificationTimeouts
+    const newNotificationIds = new Set(notifications.map(n => n.id))
+    const removedIds = currentNotifications
+      .filter(n => !newNotificationIds.has(n.id))
+      .map(n => n.id)
+
+    // Clear timeouts and update the Map
+    const newTimeouts = new Map(currentTimeouts)
+    removedIds.forEach(id => {
+      const timeout = newTimeouts.get(id)
+      if (timeout) {
+        clearTimeout(timeout)
+        newTimeouts.delete(id)
+      }
+    })
+
+    set({ notifications, notificationTimeouts: newTimeouts })
   },
 
   addNotification: (
     message: string,
     type: NotificationType,
-    options?: { title?: string; actionLabel?: string; actionUrl?: string; audience?: NotificationAudience; userId?: number }
+    options?: {
+      title?: string
+      actionLabel?: string
+      actionUrl?: string
+      audience?: NotificationAudience
+      userId?: number
+      persistent?: boolean
+      autoRemoveDelay?: number
+    }
   ) => {
     const notification: NotificationItem = {
-      id: Date.now().toString(),
+      id: generateNotificationId(),
       title: options?.title || 'System Update',
       message,
       type,
@@ -216,21 +260,47 @@ export const useUIStore = create<UIState>((set, get) => ({
       actionUrl: options?.actionUrl,
       audience: options?.audience || 'ALL',
       userId: options?.userId,
+      persistent: options?.persistent ?? false,
     }
+
     set((state) => ({
       notifications: [...state.notifications, notification],
     }))
 
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-      get().removeNotification(notification.id)
-    }, 5000)
+    // Only auto-remove if notification is not persistent
+    if (!notification.persistent) {
+      const delay = options?.autoRemoveDelay ?? 5000
+      const timeoutId = setTimeout(() => {
+        get().removeNotification(notification.id)
+      }, delay)
+
+      // Store timeout ID for cleanup
+      set((state) => {
+        const newTimeouts = new Map(state.notificationTimeouts)
+        newTimeouts.set(notification.id, timeoutId)
+        return { notificationTimeouts: newTimeouts }
+      })
+    }
   },
 
   removeNotification: (id: string) => {
-    set((state) => ({
-      notifications: state.notifications.filter((n) => n.id !== id),
-    }))
+    // Clear timeout if it exists
+    const timeout = get().notificationTimeouts.get(id)
+    if (timeout) {
+      clearTimeout(timeout)
+      set((state) => {
+        const newTimeouts = new Map(state.notificationTimeouts)
+        newTimeouts.delete(id)
+        return {
+          notifications: state.notifications.filter((n) => n.id !== id),
+          notificationTimeouts: newTimeouts
+        }
+      })
+    } else {
+      set((state) => ({
+        notifications: state.notifications.filter((n) => n.id !== id),
+      }))
+    }
   },
 
   markNotificationRead: (id: string) => {
@@ -248,6 +318,132 @@ export const useUIStore = create<UIState>((set, get) => ({
         read: true,
       })),
     }))
+  },
+
+  clearAllNotificationTimeouts: () => {
+    const timeouts = get().notificationTimeouts
+    timeouts.forEach((timeout) => clearTimeout(timeout))
+    set({ notificationTimeouts: new Map() })
+  },
+
+  fetchNotifications: async () => {
+    try {
+      const response = await notificationsAPI.getAll()
+      const apiNotifications = response.notifications || []
+
+      // Convert API notifications to NotificationItem format
+      const notifications: NotificationItem[] = apiNotifications.map((n: any) => {
+        // Transform old student notification URLs from /projects/{id} to /dashboard#evaluation
+        let actionUrl = n.actionUrl
+        if (actionUrl && (n.userId || n.audience === 'STUDENT')) {
+          // Check if it's an old project URL pattern
+          const projectUrlMatch = actionUrl.match(/^\/projects\/(\d+)$/)
+          if (projectUrlMatch) {
+            // Transform to dashboard based on notification type
+            if (n.title?.includes('Evaluation') || n.message?.includes('evaluated')) {
+              actionUrl = '/dashboard#evaluation'
+            } else if (n.title?.includes('Approved')) {
+              actionUrl = '/dashboard#submissions'
+            } else {
+              actionUrl = '/dashboard'
+            }
+          }
+        }
+
+        return {
+          id: String(n.id),
+          title: n.title,
+          message: n.message,
+          type: n.type,
+          timestamp: new Date(n.timestamp),
+          read: n.read,
+          actionLabel: n.actionLabel,
+          actionUrl: actionUrl,
+          audience: n.audience,
+          userId: n.userId,
+          persistent: true,  // API notifications are persistent
+        }
+      })
+
+      set({ notifications })
+    } catch (error) {
+      console.error('Failed to fetch notifications:', error)
+      // Don't throw - allow fallback to mock notifications
+    }
+  },
+
+  syncNotifications: async () => {
+    try {
+      const response = await notificationsAPI.getAll()
+      const apiNotifications = response.notifications || []
+
+      // Convert API notifications to NotificationItem format
+      const newNotifications: NotificationItem[] = apiNotifications.map((n: any) => {
+        // Transform old student notification URLs from /projects/{id} to /dashboard#evaluation
+        let actionUrl = n.actionUrl
+        if (actionUrl && (n.userId || n.audience === 'STUDENT')) {
+          // Check if it's an old project URL pattern
+          const projectUrlMatch = actionUrl.match(/^\/projects\/(\d+)$/)
+          if (projectUrlMatch) {
+            // Transform to dashboard based on notification type
+            if (n.title?.includes('Evaluation') || n.message?.includes('evaluated')) {
+              actionUrl = '/dashboard#evaluation'
+            } else if (n.title?.includes('Approved')) {
+              actionUrl = '/dashboard#submissions'
+            } else {
+              actionUrl = '/dashboard'
+            }
+          }
+        }
+
+        return {
+          id: String(n.id),
+          title: n.title,
+          message: n.message,
+          type: n.type,
+          timestamp: new Date(n.timestamp),
+          read: n.read,
+          actionLabel: n.actionLabel,
+          actionUrl: actionUrl,
+          audience: n.audience,
+          userId: n.userId,
+          persistent: true,  // API notifications are persistent
+        }
+      })
+
+      // Merge with existing notifications
+      // Strategy: 
+      // 1. Use API notifications as source of truth for persistent notifications
+      // 2. Keep temporary (non-persistent) notifications that aren't in API
+      // 3. Keep persistent notifications that were recently added (within last 60 seconds) even if not in API yet
+      //    This handles race conditions where notification was just created but not yet in API response
+      const currentNotifications = get().notifications
+      const apiNotificationIds = new Set(newNotifications.map(n => n.id))
+      const now = Date.now()
+      const RECENT_THRESHOLD = 60000 // 60 seconds
+
+      // Keep temporary (non-persistent) notifications that aren't from API
+      const temporaryNotifications = currentNotifications.filter(
+        n => !n.persistent && !apiNotificationIds.has(n.id)
+      )
+
+      // Keep persistent notifications that were recently added (might not be in API yet due to timing)
+      const recentPersistentNotifications = currentNotifications.filter(
+        n => {
+          if (!n.persistent) return false
+          if (apiNotificationIds.has(n.id)) return false // Already in API, use API version
+          // Check if notification was added recently (within last 60 seconds)
+          const notificationAge = now - n.timestamp.getTime()
+          return notificationAge < RECENT_THRESHOLD
+        }
+      )
+
+      // Combine: API notifications (persistent) + temporary notifications + recent persistent notifications
+      set({ notifications: [...newNotifications, ...temporaryNotifications, ...recentPersistentNotifications] })
+    } catch (error) {
+      console.error('Failed to sync notifications:', error)
+      // Silently fail - don't interrupt user experience
+    }
   },
 }))
 

@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useAuthStore, useUIStore } from '../lib/stores'
 import { useStudentDashboard, useStudentProject, useUpdateProjectSubmission, useCreateMyProject, useStudyPrograms } from '../lib/hooks'
 import VerificationModal from './VerificationModal'
@@ -48,17 +49,112 @@ const STUDENT_SECTIONS: StudentSection[] = [
 export default function StudentDashboard() {
   const { user } = useAuthStore()
   const { addNotification } = useUIStore()
+  const queryClient = useQueryClient()
   const [activeSection, setActiveSection] = useState<StudentSection['id']>('dashboard')
   const [verificationOpen, setVerificationOpen] = useState(false)
   const [studentAction, setStudentAction] = useState<'UPDATE_SUBMISSION' | 'CREATE_PROJECT' | null>(null)
   const [actionProcessing, setActionProcessing] = useState(false)
   const actionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Fetch dashboard data
+  // Fetch dashboard data first (before useEffect hooks that depend on it)
   const { data: dashboardData, isLoading: dashboardLoading, error: dashboardError } = useStudentDashboard()
   const project = dashboardData?.project || null
   // Only fetch project details if project exists
   const { data: projectData } = useStudentProject(project?.id || null)
+
+  // Handle hash fragment to switch to specific sections
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash
+      if (hash === '#evaluation') {
+        setActiveSection('evaluation')
+        // Remove hash from URL after setting section
+        window.history.replaceState(null, '', window.location.pathname)
+      } else if (hash === '#submissions') {
+        setActiveSection('submissions')
+        // Remove hash from URL after setting section
+        window.history.replaceState(null, '', window.location.pathname)
+      }
+    }
+  }, [])
+
+  // Listen for dashboard refresh events (triggered when evaluation notifications are clicked)
+  useEffect(() => {
+    const projectId = project?.id
+    const handleRefresh = () => {
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
+      // Also refetch immediately
+      queryClient.refetchQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+        queryClient.refetchQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+      }
+    }
+    
+    window.addEventListener('dashboard-refresh', handleRefresh)
+    return () => window.removeEventListener('dashboard-refresh', handleRefresh)
+  }, [queryClient, project?.id])
+
+  // Refetch evaluation data when evaluation section becomes active and set up polling
+  useEffect(() => {
+    if (activeSection === 'evaluation' && project?.id) {
+      const projectId = project.id
+      // When user navigates to evaluation section, ensure we have fresh data
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      // Force immediate refetch
+      queryClient.refetchQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+      queryClient.refetchQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      
+      // Set up more aggressive polling when evaluation section is active (every 10 seconds)
+      const pollInterval = setInterval(() => {
+        queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+        queryClient.refetchQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+      }, 10000) // Poll every 10 seconds when evaluation section is active
+      
+      return () => clearInterval(pollInterval)
+    }
+  }, [activeSection, project?.id, queryClient])
+
+  // Manual refresh function for evaluation data
+  const handleRefreshEvaluation = async () => {
+    if (project?.id) {
+      const projectId = project.id
+      // Invalidate queries to mark them as stale (without exact to match all related queries)
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      
+      // Force immediate refetch
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['students', 'me', 'projects', projectId] }),
+        queryClient.refetchQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      ])
+      
+      addNotification('Evaluation data refreshed', 'success', {
+        title: 'Refreshed',
+        audience: 'STUDENT',
+        userId: user?.id,
+        persistent: false,
+        autoRemoveDelay: 2000,
+      })
+    }
+  }
+
+  // Also listen for visibility change to refetch when user returns to the tab
+  useEffect(() => {
+    const projectId = project?.id
+    const handleVisibilityChange = () => {
+      if (!document.hidden && projectId) {
+        // User returned to the tab, refetch evaluation data
+        queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+        queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects', projectId] })
+      }
+    }
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [queryClient, project?.id])
   const updateSubmissionMutation = useUpdateProjectSubmission()
   const createProjectMutation = useCreateMyProject()
   const { data: studyProgramsData } = useStudyPrograms()
@@ -74,6 +170,7 @@ export default function StudentDashboard() {
   const [projectDescription, setProjectDescription] = useState('')
   const [selectedStudyProgram, setSelectedStudyProgram] = useState<number | ''>('')
   const [selectedLevel, setSelectedLevel] = useState<200 | 400 | ''>('')
+  const [descriptionError, setDescriptionError] = useState<string>('')
 
   // Track previous project status to detect changes
   const prevStatusRef = useRef<string | null>(null)
@@ -132,9 +229,32 @@ export default function StudentDashboard() {
     setVerificationOpen(true)
   }
   
+  const validateDescription = (description: string): string => {
+    const trimmed = description.trim()
+    if (!trimmed) {
+      return 'Description is required'
+    }
+    if (trimmed.length < 50) {
+      return `Description must be at least 50 characters (currently ${trimmed.length})`
+    }
+    return ''
+  }
+
   const handleCreateProject = () => {
+    // Validate description
+    const descError = validateDescription(projectDescription)
+    if (descError) {
+      setDescriptionError(descError)
+      addNotification(descError, 'error', {
+        title: 'Validation Error',
+        userId: user?.id,
+      })
+      return
+    }
+    setDescriptionError('')
+
     if (!projectTitle.trim() || !selectedStudyProgram || !selectedLevel) {
-      addNotification('Please fill in all required fields (Title, Study Program, and Level)', 'error', {
+      addNotification('Please fill in all required fields (Title, Description, Study Program, and Level)', 'error', {
         title: 'Validation Error',
         userId: user?.id,
       })
@@ -149,6 +269,21 @@ export default function StudentDashboard() {
     if (!studentAction || studentAction !== 'CREATE_PROJECT') {
       return
     }
+    
+    // Validate description
+    const descError = validateDescription(projectDescription)
+    if (descError) {
+      setDescriptionError(descError)
+      addNotification(descError, 'error', {
+        title: 'Validation Error',
+        userId: user?.id,
+      })
+      setActionProcessing(false)
+      setVerificationOpen(false)
+      setStudentAction(null)
+      return
+    }
+    setDescriptionError('')
     
     // Validate required fields
     if (!projectTitle.trim() || !selectedStudyProgram || !selectedLevel) {
@@ -167,7 +302,7 @@ export default function StudentDashboard() {
     try {
       await createProjectMutation.mutateAsync({
         title: projectTitle.trim(),
-        description: projectDescription.trim() || undefined,
+        description: projectDescription.trim(),
         study_program_id: Number(selectedStudyProgram),
         level: selectedLevel as 200 | 400
       })
@@ -284,8 +419,8 @@ export default function StudentDashboard() {
   const timeline = project?.status_timeline
   const progressPercentage = timeline 
     ? (timeline.evaluated?.status === 'completed' ? 100 : 
-       timeline.under_review?.status === 'current' || timeline.under_review?.status === 'completed' ? 66 : 
-       timeline.submitted?.status === 'completed' ? 33 : 0)
+       timeline.under_review?.status === 'current' || timeline.under_review?.status === 'completed' ? 75 : 
+       timeline.submitted?.status === 'completed' ? 50 : 25)
     : 0
 
   const formatDate = (dateString: string | null | undefined) => {
@@ -312,6 +447,75 @@ export default function StudentDashboard() {
             </svg>
           )}
 
+          {project && (
+            <div className={`rounded-xl p-4 flex flex-col gap-3 border ${
+              project.status === 'rejected'
+                ? 'bg-gradient-to-r from-red-50 to-rose-50 dark:from-red-900/20 dark:to-rose-900/20 border-red-200 dark:border-red-800'
+                : 'bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-green-200 dark:border-green-800'
+            }`}>
+              <div className="flex items-center gap-3">
+                <div className="flex-shrink-0">
+                  <div className={`h-12 w-12 rounded-full flex items-center justify-center ${
+                    project.status === 'rejected'
+                      ? 'bg-red-100 dark:bg-red-900/40'
+                      : 'bg-green-100 dark:bg-green-900/40'
+                  }`}>
+                    {project.status === 'rejected' ? (
+                      <svg className="w-6 h-6 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    ) : (
+                      <svg className="w-6 h-6 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    )}
+                  </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-semibold ${
+                    project.status === 'rejected'
+                      ? 'text-red-900 dark:text-red-200'
+                      : 'text-green-900 dark:text-green-200'
+                  }`}>
+                    {project.status === 'rejected' ? 'Project Rejected' : 'Project Created'}
+                  </p>
+                  <p className={`text-sm truncate ${
+                    project.status === 'rejected'
+                      ? 'text-red-700 dark:text-red-300'
+                      : 'text-green-700 dark:text-green-300'
+                  }`}>
+                    {project.title}
+                  </p>
+                </div>
+                <div className="flex-shrink-0">
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                    project.status === 'rejected'
+                      ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200'
+                      : 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                  }`}>
+                    {project.status === 'rejected' ? '✗ Rejected' : '✓ Active'}
+                  </span>
+                </div>
+              </div>
+              {project.status === 'rejected' && (
+                <div className="pt-2 border-t border-red-200 dark:border-red-800">
+                  <p className="text-xs text-red-700 dark:text-red-300 mb-3">
+                    Your project has been rejected. You can create a new project to start over.
+                  </p>
+                  <button
+                    onClick={() => setShowCreateForm(true)}
+                    className="w-full inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                  >
+                    <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                    Create New Project
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {dashboardLoading ? (
             <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
               <div className="animate-pulse space-y-4">
@@ -323,11 +527,15 @@ export default function StudentDashboard() {
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-6">
               <p className="text-red-700 dark:text-red-300">Failed to load dashboard data. Please try again.</p>
             </div>
-          ) : !project ? (
+          ) : !project || project.status === 'rejected' ? (
             <div className="bg-white dark:bg-gray-900 overflow-hidden shadow rounded-2xl border border-gray-100 dark:border-gray-800 p-8">
               {!showCreateForm ? (
                 <div className="text-center">
-                  <p className="text-gray-600 dark:text-gray-400 mb-6">You don&apos;t have a project yet. Create your project to get started.</p>
+                  <p className="text-gray-600 dark:text-gray-400 mb-6">
+                    {project?.status === 'rejected' 
+                      ? 'Your project has been rejected. Create a new project to start over.' 
+                      : 'You don\'t have a project yet. Create your project to get started.'}
+                  </p>
                   <button
                     onClick={() => setShowCreateForm(true)}
                     className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-full text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
@@ -349,6 +557,7 @@ export default function StudentDashboard() {
                         setProjectDescription('')
                         setSelectedStudyProgram('')
                         setSelectedLevel('')
+                        setDescriptionError('')
                       }}
                       className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                     >
@@ -375,15 +584,40 @@ export default function StudentDashboard() {
                     
                     <div>
                       <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
-                        Description (Optional)
+                        Description <span className="text-red-500">*</span>
+                        {projectDescription.trim().length > 0 && (
+                          <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+                            ({projectDescription.trim().length}/50 characters minimum)
+                          </span>
+                        )}
                       </label>
                       <textarea
                         value={projectDescription}
-                        onChange={(e) => setProjectDescription(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 dark:bg-gray-800 rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white"
-                        placeholder="Describe your project..."
+                        onChange={(e) => {
+                          setProjectDescription(e.target.value)
+                          if (descriptionError) {
+                            setDescriptionError(validateDescription(e.target.value))
+                          }
+                        }}
+                        onBlur={() => {
+                          setDescriptionError(validateDescription(projectDescription))
+                        }}
+                        className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 dark:text-white dark:bg-gray-800 ${
+                          descriptionError
+                            ? 'border-red-300 dark:border-red-700 focus:border-red-500 focus:ring-red-500'
+                            : 'border-gray-300 dark:border-gray-700'
+                        }`}
+                        placeholder="Describe your project in detail (minimum 50 characters)..."
                         rows={4}
                       />
+                      {descriptionError && (
+                        <p className="mt-1 text-sm text-red-600 dark:text-red-400">{descriptionError}</p>
+                      )}
+                      {!descriptionError && projectDescription.trim().length > 0 && projectDescription.trim().length < 50 && (
+                        <p className="mt-1 text-sm text-yellow-600 dark:text-yellow-400">
+                          {50 - projectDescription.trim().length} more characters required
+                        </p>
+                      )}
                     </div>
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -424,7 +658,14 @@ export default function StudentDashboard() {
                     <div className="flex gap-3 pt-4">
                       <button
                         onClick={handleCreateProject}
-                        disabled={createProjectMutation.isPending || !projectTitle.trim() || !selectedStudyProgram || !selectedLevel}
+                        disabled={
+                          createProjectMutation.isPending || 
+                          !projectTitle.trim() || 
+                          !projectDescription.trim() || 
+                          projectDescription.trim().length < 50 ||
+                          !selectedStudyProgram || 
+                          !selectedLevel
+                        }
                         className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-full font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {createProjectMutation.isPending ? 'Creating...' : 'Create Project'}
@@ -459,6 +700,15 @@ export default function StudentDashboard() {
 
                   {[
                     { 
+                      label: 'Project Created', 
+                      stage: { status: 'completed', date: project?.created_at },
+                      icon: (
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      )
+                    },
+                    { 
                       label: 'Submitted', 
                       stage: timeline?.submitted,
                       icon: '✓'
@@ -479,13 +729,13 @@ export default function StudentDashboard() {
                     return (
                       <div key={stageItem.label} className="flex flex-col items-center gap-4 flex-1">
                         <div
-                          className={`h-16 w-16 rounded-full flex items-center justify-center border-4 font-bold text-lg ${
+                          className={`h-16 w-16 rounded-full flex items-center justify-center border-4 ${
                             status === 'completed'
                               ? 'bg-blue-600 border-blue-600 text-white'
                               : status === 'current'
                                 ? 'bg-white dark:bg-gray-900 border-blue-600 text-blue-600 dark:text-blue-400'
                                 : 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500'
-                          }`}
+                          } ${typeof stageItem.icon === 'string' ? 'font-bold text-lg' : ''}`}
                         >
                           {stageItem.icon}
                         </div>
@@ -591,11 +841,20 @@ export default function StudentDashboard() {
                       <svg className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                       </svg>
-                      <div>
+                      <div className="flex-1">
                         <p className="text-sm font-medium text-red-800 dark:text-red-300">Project Rejected</p>
                         <p className="text-sm text-red-700 dark:text-red-400 mt-1">
-                          Your project has been rejected. Please contact an administrator for more information.
+                          Your project has been rejected. You can create a new project to start over.
                         </p>
+                        <button
+                          onClick={() => setShowCreateForm(true)}
+                          className="mt-3 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                        >
+                          <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                          </svg>
+                          Create New Project
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -770,20 +1029,23 @@ export default function StudentDashboard() {
           ) : (
             <>
               <div className="bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-900/30 dark:to-purple-900/30 border-2 border-blue-200 dark:border-blue-800 shadow-xl rounded-2xl p-6">
-                <h3 className="text-xl font-semibold mb-4 dark:text-white">Overall Performance</h3>
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Total Marks</p>
-                    <p className="text-4xl font-bold text-blue-600 dark:text-blue-400">
-                      {Math.round(projectData.evaluation.total_score || 0)}/{projectData.evaluation.max_score || 100}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Percentage</p>
-                    <p className="text-4xl font-bold text-blue-600 dark:text-blue-400">
-                      {Math.round(projectData.evaluation.percentage || 0)}%
-                    </p>
-                  </div>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xl font-semibold dark:text-white">Overall Performance</h3>
+                  <button
+                    onClick={handleRefreshEvaluation}
+                    className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-900/50 hover:bg-blue-200 dark:hover:bg-blue-900/70 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                    title="Refresh evaluation data"
+                  >
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="mb-4">
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Overall Score</p>
+                  <p className="text-4xl font-bold text-blue-600 dark:text-blue-400">
+                    {Math.round(projectData.evaluation.total_score || 0)}/{projectData.evaluation.max_score || 100}
+                  </p>
                 </div>
                 <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-4">
                   <div 

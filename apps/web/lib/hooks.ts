@@ -44,6 +44,9 @@ export const useProject = (id: number) => {
     queryKey: [QUERY_KEYS.PROJECTS, id],
     queryFn: () => projectsAPI.getById(id),
     enabled: !!id,
+    staleTime: 0, // Always consider data stale
+    refetchOnMount: true, // Always refetch when component mounts
+    refetchOnWindowFocus: true, // Refetch when window regains focus
   })
 }
 
@@ -265,6 +268,9 @@ export const useProjectEvaluations = (projectId: number) => {
     queryKey: [QUERY_KEYS.EVALUATIONS, 'project', projectId],
     queryFn: () => evaluationsAPI.getByProject(projectId),
     enabled: !!projectId,
+    staleTime: 0, // Always consider data stale
+    refetchOnMount: true, // Always refetch when component mounts
+    refetchOnWindowFocus: true, // Refetch when window regains focus
   })
 }
 
@@ -282,9 +288,20 @@ export const useCreateEvaluation = () => {
   return useMutation({
     mutationFn: (evaluationData: any) =>
       evaluationsAPI.create(evaluationData),
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      const projectId = variables.projectId
+      // Invalidate all evaluations
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATIONS] })
+      // Invalidate specific project evaluations if projectId is available
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, 'project', projectId] })
+        queryClient.refetchQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, 'project', projectId] })
+      }
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS] })
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS, projectId] })
+        queryClient.refetchQueries({ queryKey: [QUERY_KEYS.PROJECTS, projectId] })
+      }
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.ANALYTICS] })
     },
   })
@@ -294,9 +311,20 @@ export const useUpdateEvaluation = () => {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ evaluationId, data }: { evaluationId: number; data: any }) =>
+    mutationFn: ({ evaluationId, data, projectId }: { evaluationId: number; data: any; projectId: number }) =>
       evaluationsAPI.update(evaluationId, data),
-    onSuccess: (_, { evaluationId }) => {
+    onSuccess: (_, variables) => {
+      const { projectId, evaluationId } = variables
+
+      // Invalidate and refetch the specific project's evaluations
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, 'project', projectId] })
+      queryClient.refetchQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, 'project', projectId] })
+
+      // Also invalidate the project itself
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS, projectId] })
+      queryClient.refetchQueries({ queryKey: [QUERY_KEYS.PROJECTS, projectId] })
+
+      // Invalidate specific evaluation and analytics
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, evaluationId] })
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.ANALYTICS] })
     },
@@ -365,7 +393,9 @@ export const useStudentDashboard = () => {
   return useQuery({
     queryKey: ['students', 'me', 'dashboard'],
     queryFn: () => studentsAPI.getMyDashboard(),
-    staleTime: 1 * 60 * 1000, // 1 minute
+    staleTime: 0, // Always consider data stale to allow refetching
+    refetchInterval: 30000, // Refetch every 30 seconds when component is mounted
+    refetchOnWindowFocus: true, // Refetch when window regains focus
   })
 }
 
@@ -374,6 +404,15 @@ export const useStudentProject = (projectId: number | null) => {
     queryKey: ['students', 'me', 'projects', projectId],
     queryFn: () => studentsAPI.getMyProject(projectId!),
     enabled: !!projectId,
+    staleTime: 0, // Always consider data stale to allow refetching
+    refetchInterval: (query) => {
+      // Only refetch if query is not in error state and projectId exists
+      return query.state.status === 'success' && projectId ? 30000 : false
+    },
+    refetchIntervalInBackground: false, // Don't refetch when tab is in background
+    refetchOnWindowFocus: true, // Refetch when window regains focus
+    refetchOnMount: true, // Always refetch when component mounts
+    refetchOnReconnect: true, // Refetch when network reconnects
   })
 }
 
@@ -404,7 +443,7 @@ export const useCreateMyProject = () => {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (data: { title: string; description?: string; study_program_id: number; level: 200 | 400 }) =>
+    mutationFn: (data: { title: string; description: string; study_program_id: number; level: 200 | 400 }) =>
       studentsAPI.createMyProject(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })

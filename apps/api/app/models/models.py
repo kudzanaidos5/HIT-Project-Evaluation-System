@@ -171,6 +171,9 @@ class Project(db.Model):
         if isinstance(self.status, ProjectStatus):
             return self.status.value
         elif isinstance(self.status, str):
+            # Handle legacy 'pending' status
+            if self.status.lower() == 'pending':
+                return ProjectStatus.PENDING_APPROVAL.value
             return self.status
         else:
             return str(self.status) if self.status else 'draft'
@@ -250,6 +253,14 @@ class Evaluation(db.Model):
         return round((total_score / total_max_score) * 100, 2)
     
     def to_dict(self):
+        # Calculate total_score from actual marks (sum of scores / sum of max scores) * 100
+        calculated_total_score = self.total_score  # Default to stored value
+        if self.marks.count() > 0:
+            total_score = sum(mark.score for mark in self.marks)
+            total_max_score = sum(mark.max_score for mark in self.marks)
+            if total_max_score > 0:
+                calculated_total_score = round((total_score / total_max_score) * 100, 2)
+        
         return {
             'id': self.id,
             'project_id': self.project_id,
@@ -257,7 +268,7 @@ class Evaluation(db.Model):
             'admin_id': self.admin_id,
             'admin_name': self.evaluator.name if self.evaluator else None,
             'evaluation_type': self.evaluation_type.value if self.evaluation_type else None,
-            'total_score': self.total_score,
+            'total_score': calculated_total_score,  # Use calculated percentage from marks
             
             # Individual marks (only relevant based on type)
             'code_quality': self.code_quality,
@@ -315,4 +326,47 @@ class Deadline(db.Model):
             'deadline': self.deadline.isoformat(),
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat()
+        }
+
+class NotificationType(Enum):
+    SUCCESS = "success"
+    ERROR = "error"
+    INFO = "info"
+    WARNING = "warning"
+
+class NotificationAudience(Enum):
+    ADMIN = "ADMIN"
+    STUDENT = "STUDENT"
+    ALL = "ALL"
+
+class Notification(db.Model):
+    __tablename__ = 'notifications'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)  # Nullable for audience-based notifications
+    title = db.Column(db.String(200), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    type = db.Column(db.Enum(NotificationType), nullable=False)
+    read = db.Column(db.Boolean, nullable=False, default=False)
+    audience = db.Column(db.Enum(NotificationAudience), nullable=True)  # Nullable for user-specific notifications
+    action_label = db.Column(db.String(100), nullable=True)
+    action_url = db.Column(db.String(500), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    read_at = db.Column(db.DateTime, nullable=True)
+    
+    # Relationships
+    user = db.relationship('User', backref='notifications', lazy=True)
+    
+    def to_dict(self):
+        return {
+            'id': str(self.id),
+            'title': self.title,
+            'message': self.message,
+            'type': self.type.value if self.type else None,
+            'timestamp': self.created_at,
+            'read': self.read,
+            'actionLabel': self.action_label,
+            'actionUrl': self.action_url,
+            'audience': self.audience.value if self.audience else None,
+            'userId': self.user_id
         }
