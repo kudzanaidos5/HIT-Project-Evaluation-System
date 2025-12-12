@@ -42,30 +42,38 @@ def login():
     try:
         data = login_schema.load(request.json)
     except ValidationError as err:
+        current_app.logger.warning(f"Login validation error: {err.messages}")
         return jsonify({"error": "Validation error", "details": err.messages}), 400
     
     if not data.get('email') or not data.get('password'):
+        current_app.logger.warning("Login attempt with missing credentials")
         return jsonify({"error": {"message": "Email and password are required", "code": "MISSING_CREDENTIALS"}}), 400
     
     # Enforce institutional email domain
     if not is_allowed_domain(data.get('email', '')):
+        current_app.logger.warning(f"Login attempt with invalid domain: {data.get('email', '')}")
         return jsonify({"error": {"message": f"Only {ALLOWED_EMAIL_DOMAIN} emails are allowed", "code": "INVALID_EMAIL_DOMAIN"}}), 400
     
     email = data['email'].lower()
+    current_app.logger.info(f"Login attempt for email: {email}")
 
     user = User.query.filter_by(email=email).first()
     
     if not user:
+        current_app.logger.warning(f"Login failed: User not found for email: {email}")
         return jsonify({"error": {"message": "Invalid email or password", "code": "UNAUTHORIZED"}}), 401
     
     if user.is_oauth_user:
+        current_app.logger.warning(f"Login failed: User {email} is OAuth user")
         return jsonify({"error": {"message": "This account uses Google sign-in. Please sign in with Google.", "code": "OAUTH_ACCOUNT"}}), 403
 
     if not user.check_password(data['password']):
+        current_app.logger.warning(f"Login failed: Invalid password for email: {email}")
         return jsonify({"error": {"message": "Invalid email or password", "code": "UNAUTHORIZED"}}), 401
     
     try:
         access_token, refresh_token = _create_tokens_for_user(user)
+        current_app.logger.info(f"Login successful for email: {email}, user_id: {user.id}")
         
         return jsonify({
             "accessToken": access_token,
@@ -73,6 +81,7 @@ def login():
             "user": user.to_dict()
         }), 200
     except Exception as e:
+        current_app.logger.error(f"Login error for email {email}: {str(e)}", exc_info=True)
         return jsonify({"error": {"message": "Authentication failed", "code": "AUTH_ERROR"}}), 500
 
 @auth_bp.route('/register', methods=['POST'])
@@ -132,13 +141,25 @@ def refresh():
 @auth_bp.route('/me', methods=['GET'])
 @jwt_required()
 def me():
-    identity = get_jwt_identity()
-    user = User.query.get(int(identity))
-    
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-    
-    return jsonify({"user": user.to_dict()}), 200
+    try:
+        identity = get_jwt_identity()
+        if not identity:
+            return jsonify({"error": {"message": "Invalid token", "code": "INVALID_TOKEN"}}), 401
+        
+        try:
+            user_id = int(identity)
+        except (ValueError, TypeError):
+            return jsonify({"error": {"message": "Invalid token format", "code": "INVALID_TOKEN"}}), 401
+        
+        user = User.query.get(user_id)
+        
+        if not user:
+            return jsonify({"error": {"message": "User not found", "code": "USER_NOT_FOUND"}}), 404
+        
+        return jsonify({"user": user.to_dict()}), 200
+    except Exception as e:
+        current_app.logger.error(f"Error in /me endpoint: {str(e)}", exc_info=True)
+        return jsonify({"error": {"message": "Failed to retrieve user information", "code": "SERVER_ERROR"}}), 500
 
 @auth_bp.route('/logout', methods=['POST'])
 @jwt_required()

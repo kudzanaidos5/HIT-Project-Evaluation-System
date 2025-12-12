@@ -5,6 +5,9 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Update package list (curl not needed, using Python for health checks)
+RUN apt-get update && rm -rf /var/lib/apt/lists/*
+
 # Configure pip for better reliability
 RUN pip config set global.timeout 300 && \
     pip config set global.retries 5
@@ -14,7 +17,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Create instance directory for database
+RUN mkdir -p instance
+
+# Make entrypoint script executable
+RUN chmod +x docker-entrypoint.sh
+
 EXPOSE 5000
 
-CMD ["python", "wsgi.py"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
 

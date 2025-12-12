@@ -10,15 +10,16 @@ A modern Student Evaluation System for managing project submissions, grading wor
 5. [Getting Started](#getting-started)
 6. [Environment Configuration](#environment-configuration)
 7. [Database Seeding](#database-seeding)
-8. [Running the Apps](#running-the-apps)
-9. [User Roles & Permissions](#user-roles--permissions)
-10. [Project Workflow](#project-workflow)
-11. [Evaluation System](#evaluation-system)
-12. [Testing & Linting](#testing--linting)
-13. [Deployment](#deployment)
-14. [Troubleshooting](#troubleshooting)
-15. [Contributing](#contributing)
-16. [License](#license)
+8. [Database Migrations](#database-migrations)
+9. [Running the Apps](#running-the-apps)
+10. [User Roles & Permissions](#user-roles--permissions)
+11. [Project Workflow](#project-workflow)
+12. [Evaluation System](#evaluation-system)
+13. [Testing & Linting](#testing--linting)
+14. [Deployment](#deployment)
+15. [Troubleshooting](#troubleshooting)
+16. [Contributing](#contributing)
+17. [License](#license)
 
 ---
 
@@ -189,6 +190,56 @@ To reset and reseed the database (Windows):
 RESET_DB_AND_SEED.bat
 ```
 
+## Database Migrations
+
+The system uses Flask-Migrate for schema migrations and includes a comprehensive migration script for existing databases.
+
+### Initial Setup (New Database)
+
+For a fresh database setup:
+
+```bash
+cd apps/api
+venv\Scripts\activate
+flask db init              # First time only
+flask db migrate -m "Initial migration"
+flask db upgrade
+```
+
+### Existing Database Migration
+
+If you have an existing database that needs updates (adding columns, migrating data, etc.):
+
+```bash
+cd apps/api
+venv\Scripts\activate
+python comprehensive_migration_script.py
+```
+
+This comprehensive script will:
+- ✅ Add missing columns (OAuth fields, submission fields, scoring fields)
+- ✅ Migrate project status values to enum format
+- ✅ Validate database integrity
+
+The script is **idempotent** and safe to run multiple times. For detailed information, see [`apps/api/MIGRATION_GUIDE.md`](apps/api/MIGRATION_GUIDE.md).
+
+### Creating New Migrations
+
+When you modify database models:
+
+```bash
+flask db migrate -m "Description of changes"
+flask db upgrade
+```
+
+### Migration Files
+
+- **`comprehensive_migration_script.py`**: Standalone executable script for migrating existing databases
+- **`migrations/versions/comprehensive_migration.py`**: Reference documentation with complete schema
+- **`MIGRATION_GUIDE.md`**: Detailed migration guide and troubleshooting
+
+For more information, see [`apps/api/DATABASE_SETUP.md`](apps/api/DATABASE_SETUP.md).
+
 ## Running the Apps
 
 ### Backend (Flask API)
@@ -357,8 +408,10 @@ docker build -t hit-eval-api apps/api
 
 **Database issues**
 - **SQLite locked**: Stop all Flask instances and delete `instance/dev.db`
-- Run migrations: `flask db upgrade`
-- Reset database: Use `RESET_DB_AND_SEED.bat` (Windows)
+- **Missing columns**: Run `python comprehensive_migration_script.py` to add missing columns
+- **Schema out of date**: Run migrations: `flask db upgrade`
+- **Reset database**: Use `RESET_DB_AND_SEED.bat` (Windows)
+- For detailed troubleshooting, see [`apps/api/DATABASE_SETUP.md`](apps/api/DATABASE_SETUP.md)
 
 **Static imports missing**
 - Run `npm install` after pulling new commits

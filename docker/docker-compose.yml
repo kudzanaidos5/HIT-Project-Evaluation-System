@@ -3,22 +3,58 @@ services:
     build:
       context: ../apps/api
       dockerfile: Dockerfile
+    container_name: student-eval-api
     env_file:
-      - ../.env.example
+      - ../.env
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///instance/dev.db}
+      - FLASK_ENV=${FLASK_ENV:-development}
+      - FLASK_DEBUG=${FLASK_DEBUG:-True}
+      - API_CORS_ORIGIN=${API_CORS_ORIGIN:-http://localhost:3000,http://web:3000}
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-dev-secret-key-change-in-production}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-in-production}
     ports:
       - "5000:5000"
     volumes:
       - ../apps/api:/app
+      - api_db_data:/app/instance
+    networks:
+      - student-eval-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   web:
     build:
       context: ../apps/web
       dockerfile: Dockerfile
+    container_name: student-eval-web
     env_file:
-      - ../.env.example
+      - ../.env
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:5000/api}
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
     ports:
       - "3000:3000"
     volumes:
       - ../apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - student-eval-network
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
+volumes:
+  api_db_data:
+
+
+networks:
+  student-eval-network:
+    driver: bridge
