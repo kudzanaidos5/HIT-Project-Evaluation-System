@@ -20,8 +20,10 @@ COPY . .
 # Create instance directory for database
 RUN mkdir -p instance
 
-# Make entrypoint script executable
-RUN chmod +x docker-entrypoint.sh
+# Fix line endings (Windows CRLF -> Linux LF) and make entrypoint script executable
+# This is necessary when building on Windows and running on Linux containers
+RUN sed -i 's/\r$//' docker-entrypoint.sh && \
+    chmod +x docker-entrypoint.sh
 
 EXPOSE 5000
 
