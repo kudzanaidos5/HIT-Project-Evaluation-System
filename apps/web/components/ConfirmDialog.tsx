@@ -34,11 +34,22 @@ export default function ConfirmDialog({
 
   useEffect(() => {
     if (isOpen) {
-      // Focus the confirm button when dialog opens
-      setTimeout(() => {
+      // Focus the confirm button when dialog opens - only if we don't have an input in message that might need focus
+      // We use a small delay to ensure the DOM is ready
+      const timer = setTimeout(() => {
+        // If there's an input in the dialog, we might NOT want to force focus to the confirm button
+        // if the user is already interacting with that input.
+        // However, for general accessibility, focusing the primary action is standard.
+        // The fix here is primarily removing this from the dependency array below.
         confirmButtonRef.current?.focus()
       }, 100)
       
+      return () => clearTimeout(timer)
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    if (isOpen) {
       // Handle ESC key
       const handleEscape = (e: KeyboardEvent) => {
         if (e.key === 'Escape' && !isLoading) {

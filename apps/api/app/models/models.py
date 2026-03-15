@@ -158,6 +158,7 @@ class Project(db.Model):
     documentation_link = db.Column(db.String(500), nullable=True)  # Google Drive or other documentation links
     pdf_path = db.Column(db.String(500), nullable=True)
     submitted_at = db.Column(db.DateTime, nullable=True)
+    rejection_reason = db.Column(db.Text, nullable=True)
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -197,6 +198,7 @@ class Project(db.Model):
             'documentation_link': self.documentation_link,
             'pdf_path': self.pdf_path,
             'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
+            'rejection_reason': self.rejection_reason,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
             'evaluation_count': self.evaluations.count()

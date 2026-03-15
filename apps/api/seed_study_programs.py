@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Seed script for Study Programs
-Creates the initial study programs as specified
+Creates the initial unique study programs
 """
 
 import sys
@@ -21,54 +21,30 @@ def seed_study_programs():
     with app.app_context():
         print("Starting study programs seeding...")
         
-        # Study programs data from the requirements
+        # Unique Study programs data
         study_programs_data = [
             {
-                'code': 'CS200',
+                'code': 'CS',
                 'name': 'Computer Science',
-                'description': None,  # "No description" in the image
+                'description': 'Department of Computer Science',
                 'created_at': datetime(2025, 11, 17)
             },
             {
-                'code': 'CS400',
-                'name': 'Computer Science',
-                'description': 'Level400',
-                'created_at': datetime(2025, 11, 17)
-            },
-            {
-                'code': 'IT200',
+                'code': 'IT',
                 'name': 'Information and Technology',
-                'description': 'Level 200',
+                'description': 'Department of Information Technology',
                 'created_at': datetime(2025, 11, 17)
             },
             {
-                'code': 'IT400',
-                'name': 'Information and Technology',
-                'description': 'Level 400',
-                'created_at': datetime(2025, 11, 17)
-            },
-            {
-                'code': 'SE200',
+                'code': 'SWE',
                 'name': 'Software Engineering',
-                'description': 'Level 200',
+                'description': 'Department of Software Engineering',
                 'created_at': datetime(2025, 11, 17)
             },
             {
-                'code': 'SE400',
-                'name': 'Software Engineering',
-                'description': 'level 400',
-                'created_at': datetime(2025, 11, 25)
-            },
-            {
-                'code': 'ISA200',
+                'code': 'ISA',
                 'name': 'Information Security and Assurance',
-                'description': 'Level 200',
-                'created_at': datetime(2025, 11, 29)
-            },
-            {
-                'code': 'ISA400',
-                'name': 'Information Security and Assurance',
-                'description': 'Level 400',
+                'description': 'Department of Information Security and Assurance',
                 'created_at': datetime(2025, 11, 29)
             },
         ]
@@ -77,7 +53,7 @@ def seed_study_programs():
         skipped_count = 0
         
         for program_data in study_programs_data:
-            # Check if program already exists
+            # Check if program already exists by code
             existing_program = StudyProgram.query.filter_by(code=program_data['code']).first()
             
             if existing_program:
@@ -107,4 +83,3 @@ def seed_study_programs():
 
 if __name__ == '__main__':
     seed_study_programs()
-

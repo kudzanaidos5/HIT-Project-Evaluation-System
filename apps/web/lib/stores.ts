@@ -267,11 +267,11 @@ export const useUIStore = create<UIState>((set, get) => ({
       notifications: [...state.notifications, notification],
     }))
 
-    // Only auto-remove if notification is not persistent
+    // Automatically mark as read after the delay if not persistent
     if (!notification.persistent) {
-      const delay = options?.autoRemoveDelay ?? 5000
+      const delay = options?.autoRemoveDelay ?? 8000
       const timeoutId = setTimeout(() => {
-        get().removeNotification(notification.id)
+        get().markNotificationRead(notification.id)
       }, delay)
 
       // Store timeout ID for cleanup

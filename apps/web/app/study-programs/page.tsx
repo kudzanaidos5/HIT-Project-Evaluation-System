@@ -158,7 +158,7 @@ export default function StudyProgramManagementPage() {
               Study Program Management
             </h1>
           </div>
-          <p className="text-gray-600 dark:text-gray-400 ml-14">Manage study programs and their details</p>
+          <p className="text-gray-600 dark:text-gray-400 ml-14">Manage study programs and their details (e.g., CS, IT, ISA)</p>
         </div>
         <button
           onClick={openCreateModal}
@@ -182,7 +182,7 @@ export default function StudyProgramManagementPage() {
             <ul className="list-disc list-inside space-y-1 text-blue-700 dark:text-blue-400">
               <li>You can <strong>edit</strong> any study program&apos;s information (code, name, description)</li>
               <li>Study programs with associated <strong>projects</strong> cannot be deleted to maintain data integrity</li>
-              <li>Study program codes must follow the format: 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)</li>
+              <li>Study program codes should be 2-6 letters (e.g., CS, IT, ISA, SWE)</li>
               <li>Hover over disabled Delete buttons to see the reason</li>
             </ul>
           </div>
@@ -191,7 +191,7 @@ export default function StudyProgramManagementPage() {
 
       {/* Filters and Search */}
       <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label htmlFor="search" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Search
@@ -206,31 +206,14 @@ export default function StudyProgramManagementPage() {
             />
           </div>
           
-          <div>
-            <label htmlFor="level" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Level
-            </label>
-            <select
-              id="level"
-              value={levelFilter}
-              onChange={(e) => setLevelFilter(e.target.value as 'all' | '200' | '400')}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="all">All Levels</option>
-              <option value="200">Level 200</option>
-              <option value="400">Level 400</option>
-            </select>
-          </div>
-          
           <div className="flex items-end">
             <button
               onClick={() => {
                 setSearchTerm('')
-                setLevelFilter('all')
               }}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              Clear Filters
+              Clear Search
             </button>
           </div>
         </div>
@@ -405,12 +388,12 @@ export default function StudyProgramManagementPage() {
               <input
                 type="text"
                 className="form-input"
-                placeholder="e.g., ISA200 or CS400"
+                placeholder="e.g., CS, IT, ISA"
                 {...register('code', { 
                   required: 'Study program code is required',
                   pattern: {
-                    value: /^[A-Za-z]{2,3}(200|400)$/,
-                    message: 'Study program code must be 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)'
+                    value: /^[A-Za-z]{2,6}$/,
+                    message: 'Study program code must be 2-6 letters (e.g., CS, IT, ISA)'
                   }
                 })}
                 onChange={(e) => {

@@ -7,6 +7,7 @@ interface NotificationsDropdownProps {
   notifications: NotificationItem[]
   onSelect: (notification: NotificationItem) => void
   onMarkAllRead: () => void
+  onRemove: (id: string) => void
 }
 
 const typeStyles: Record<NotificationType, string> = {
@@ -33,6 +34,7 @@ export default function NotificationsDropdown({
   notifications,
   onSelect,
   onMarkAllRead,
+  onRemove,
 }: NotificationsDropdownProps) {
   const unreadCount = notifications.filter((notification) => !notification.read).length
 
@@ -51,8 +53,12 @@ export default function NotificationsDropdown({
         </div>
         {notifications.length > 0 && (
           <button
-            onClick={onMarkAllRead}
-            className="text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-300"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onMarkAllRead();
+            }}
+            className="text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-300 px-2 py-1 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/20"
           >
             Mark all read
           </button>
@@ -66,38 +72,58 @@ export default function NotificationsDropdown({
           </div>
         ) : (
           notifications.map((notification) => (
-            <button
+            <div
               key={notification.id}
-              onClick={() => onSelect(notification)}
-              className={`w-full text-left px-4 py-3 flex gap-3 transition-colors ${
+              className={`group relative w-full text-left px-4 py-3 flex gap-3 transition-colors ${
                 notification.read
                   ? 'bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800/70'
                   : 'bg-blue-50/50 dark:bg-blue-900/20 hover:bg-blue-50 dark:hover:bg-blue-900/30'
               }`}
             >
-              <div className="pt-1">
-                <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-semibold rounded-full ${typeStyles[notification.type]}`}>
-                  {notification.type.toUpperCase()}
-                </span>
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{notification.title}</p>
-                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{notification.message}</p>
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-xs text-gray-400 dark:text-gray-500">
-                    {formatRelativeTime(notification.timestamp)}
+              <div 
+                className="flex gap-3 flex-1 cursor-pointer"
+                onClick={() => onSelect(notification)}
+              >
+                <div className="pt-1">
+                  <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-semibold rounded-full ${typeStyles[notification.type]}`}>
+                    {notification.type.toUpperCase()}
                   </span>
-                  {notification.actionLabel && (
-                    <span className="text-xs font-medium text-blue-600 dark:text-blue-300">
-                      {notification.actionLabel}
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{notification.title}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{notification.message}</p>
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="text-xs text-gray-400 dark:text-gray-500">
+                      {formatRelativeTime(notification.timestamp)}
                     </span>
-                  )}
+                    {notification.actionLabel && (
+                      <span className="text-xs font-medium text-blue-600 dark:text-blue-300">
+                        {notification.actionLabel}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-              {!notification.read && (
-                <span className="mt-1 h-2 w-2 rounded-full bg-blue-500"></span>
-              )}
-            </button>
+              
+              <div className="flex flex-col justify-start items-center gap-2">
+                {!notification.read && (
+                  <span className="h-2 w-2 rounded-full bg-blue-500"></span>
+                )}
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onRemove(notification.id);
+                  }}
+                  title="Remove notification"
+                  className="p-1.5 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-all"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
+            </div>
           ))
         )}
       </div>

@@ -28,11 +28,45 @@ export default function ProjectsPage() {
   
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [levelFilter, setLevelFilter] = useState<'all' | '200' | '400'>('all')
+  const [showStatusGuide, setShowStatusGuide] = useState(false)
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
+
+  const statusInfo: Record<string, { label: string; description: string; className: string }> = {
+    'pending_approval': {
+      label: 'Pending Approval',
+      description: 'Project created by student, awaiting administrator approval to proceed.',
+      className: 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-400'
+    },
+    'draft': {
+      label: 'Draft',
+      description: 'Project approved by administrator. Student can now add submission details (GitHub/Documentation links).',
+      className: 'bg-gray-100 dark:bg-gray-900/30 text-gray-800 dark:text-gray-400'
+    },
+    'submitted': {
+      label: 'Submitted',
+      description: 'Student has provided submission links. Ready for administrator review.',
+      className: 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-400'
+    },
+    'under_review': {
+      label: 'Under Review',
+      description: 'Administrator has started the evaluation process.',
+      className: 'bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-400'
+    },
+    'evaluated': {
+      label: 'Evaluated',
+      description: 'Project has been fully evaluated and scores have been released.',
+      className: 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400'
+    },
+    'rejected': {
+      label: 'Rejected',
+      description: 'Project was rejected by administrator. Student must create a new one.',
+      className: 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-400'
+    }
+  }
   const [projectToReject, setProjectToReject] = useState<number | null>(null)
   const [rejectionReason, setRejectionReason] = useState('')
   const [rejectionReasonError, setRejectionReasonError] = useState('')
-  const [levelFilter, setLevelFilter] = useState<'all' | '200' | '400'>('all')
   const [studyProgramFilter, setStudyProgramFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<'title' | 'student_name' | 'status' | 'created_at'>('created_at')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
@@ -177,7 +211,7 @@ export default function ProjectsPage() {
               <option value="all">All Study Programs</option>
               {studyPrograms.map((program: any) => (
                 <option key={program.id} value={program.id.toString()}>
-                  {program.code}
+                  {program.name}
                 </option>
               ))}
             </select>
@@ -234,6 +268,15 @@ export default function ProjectsPage() {
             <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
               Projects ({projects.length})
             </h3>
+            <button
+              onClick={() => setShowStatusGuide(true)}
+              className="inline-flex items-center px-3 py-1.5 border border-blue-300 dark:border-blue-700 text-xs font-medium rounded-full text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+            >
+              <svg className="mr-1.5 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Status Guide
+            </button>
           </div>
         </div>
 
@@ -263,38 +306,16 @@ export default function ProjectsPage() {
                       <h4 className="text-lg font-medium text-gray-900 dark:text-gray-100">{project.title}</h4>
                       {(() => {
                         const status = project.status || 'draft'
-                        const statusConfig: Record<string, { label: string; className: string }> = {
-                          'pending_approval': {
-                            label: 'Pending Approval',
-                            className: 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-400'
-                          },
-                          'draft': {
-                            label: 'Draft',
-                            className: 'bg-gray-100 dark:bg-gray-900/30 text-gray-800 dark:text-gray-400'
-                          },
-                          'submitted': {
-                            label: 'Submitted',
-                            className: 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-400'
-                          },
-                          'under_review': {
-                            label: 'Under Review',
-                            className: 'bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-400'
-                          },
-                          'evaluated': {
-                            label: 'Evaluated',
-                            className: 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400'
-                          },
-                          'rejected': {
-                            label: 'Rejected',
-                            className: 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-400'
-                          }
-                        }
-                        const config = statusConfig[status] || {
+                        const config = statusInfo[status] || {
                           label: 'Unknown',
+                          description: 'Unknown status',
                           className: 'bg-gray-100 dark:bg-gray-900/30 text-gray-800 dark:text-gray-400'
                         }
                         return (
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.className}`}>
+                          <span 
+                            title={config.description}
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium cursor-help ${config.className}`}
+                          >
                             {config.label}
                           </span>
                         )
@@ -436,6 +457,36 @@ export default function ProjectsPage() {
         confirmButtonStyle="danger"
         isLoading={rejectProjectMutation.isPending}
         confirmDisabled={!rejectionReason.trim()}
+      />
+
+      {/* Status Guide Modal */}
+      <ConfirmDialog
+        isOpen={showStatusGuide}
+        onClose={() => setShowStatusGuide(false)}
+        onConfirm={() => setShowStatusGuide(false)}
+        title="Project Status Guide"
+        message={
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Here is an explanation of what each project status code means:
+            </p>
+            <div className="space-y-3">
+              {Object.entries(statusInfo).map(([key, info]) => (
+                <div key={key} className="flex gap-3 items-start p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-700">
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium whitespace-nowrap mt-0.5 ${info.className}`}>
+                    {info.label}
+                  </span>
+                  <p className="text-sm text-gray-700 dark:text-gray-300">
+                    {info.description}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        }
+        confirmText="Got it"
+        cancelText=""
+        confirmButtonStyle="primary"
       />
     </div>
   )

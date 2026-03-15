@@ -8,6 +8,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import VerificationModal from '../../../components/VerificationModal'
 import { useQueryClient } from '@tanstack/react-query'
+import { Monitor, BarChart3 } from 'lucide-react'
 
 interface EvaluationFormData {
   evaluationType: 'PROJECT' | 'PRESENTATION'
@@ -397,9 +398,7 @@ export default function ProjectDetailPage() {
                     className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                   >
-                    <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
+                    <Monitor className="mr-2 h-4 w-4" />
                     Evaluate Project
                   </button>
                 )}
@@ -410,9 +409,7 @@ export default function ProjectDetailPage() {
                     className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
                   >
-                    <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
-                    </svg>
+                    <BarChart3 className="mr-2 h-4 w-4" />
                     Evaluate Presentation
                   </button>
                 )}
@@ -720,7 +717,7 @@ export default function ProjectDetailPage() {
                 >
                   <div className="flex items-center justify-between mb-3">
                     <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center">
-                      <span className="mr-2">💻</span>
+                      <Monitor className="mr-2 h-5 w-5 text-blue-500" />
                       Project Evaluation
                     </h4>
                     {projectEvaluation ? (
@@ -814,7 +811,7 @@ export default function ProjectDetailPage() {
                 >
                   <div className="flex items-center justify-between mb-3">
                     <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center">
-                      <span className="mr-2">📊</span>
+                      <BarChart3 className="mr-2 h-5 w-5 text-purple-500" />
                       Presentation Evaluation
                     </h4>
                     {presentationEvaluation ? (
@@ -930,8 +927,13 @@ export default function ProjectDetailPage() {
                   
                   <div className="mb-6">
                     <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-md border border-blue-200 dark:border-blue-800 mb-4">
-                      <p className="font-medium text-blue-900 dark:text-blue-100">
-                        {evaluationType === 'PROJECT' ? '💻 Project Evaluation' : '📊 Presentation Evaluation'}
+                      <p className="font-medium text-blue-900 dark:text-blue-100 flex items-center">
+                        {evaluationType === 'PROJECT' ? (
+                          <Monitor className="mr-2 h-5 w-5 text-blue-500" />
+                        ) : (
+                          <BarChart3 className="mr-2 h-5 w-5 text-purple-500" />
+                        )}
+                        {evaluationType === 'PROJECT' ? 'Project Evaluation' : 'Presentation Evaluation'}
                       </p>
                       <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
                         {evaluationType === 'PROJECT' 

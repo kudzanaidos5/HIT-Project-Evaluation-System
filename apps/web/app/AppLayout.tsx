@@ -371,16 +371,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient()
   const { user, isAuthenticated, logout, checkAuth } = useAuthStore()
   const {
-    sidebarExpanded,
-    settingsMenuOpen,
-    toggleSidebar,
-    toggleSettingsMenu,
-    notifications,
-    setNotifications,
-    markNotificationRead,
-    markAllNotificationsRead,
-    fetchNotifications,
-    syncNotifications,
+  sidebarExpanded,
+  settingsMenuOpen,
+  toggleSidebar,
+  toggleSettingsMenu,
+  notifications,
+  setNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  removeNotification,
+  fetchNotifications,
+  syncNotifications,
   } = useUIStore()
   const { isDarkMode, toggleDarkMode } = useThemeStore()
   const isAdmin = user?.role === 'ADMIN'
@@ -527,6 +528,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
     }
     
+    // Handle project rejection notifications
+    if (notification.title?.includes('Rejected') || (notification.actionLabel === 'View reason' && notification.actionUrl === '/dashboard')) {
+      // Small delay to ensure navigation completes first
+      setTimeout(() => {
+        window.dispatchEvent(new Event('open-rejection-modal'))
+      }, 500)
+    }
+    
     if (notification.actionUrl) {
       router.push(notification.actionUrl)
     }
@@ -551,7 +560,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         markNotificationRead(notification.id)
       }
     })
-    setNotificationsOpen(false)
+    // Do not close dropdown after marking all as read
   }
 
   const scopedNotifications = useMemo(() => {
@@ -662,6 +671,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     notifications={scopedNotifications}
                     onSelect={handleNotificationSelect}
                     onMarkAllRead={handleMarkVisibleNotificationsRead}
+                    onRemove={removeNotification}
                   />
                 )}
               </div>

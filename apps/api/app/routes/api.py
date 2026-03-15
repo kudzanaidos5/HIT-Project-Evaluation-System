@@ -166,27 +166,47 @@ def _build_report_summary(level_param=None, start_date_str=None, end_date_str=No
         } for grade, count in grade_rows
     ]
 
-    study_program_query = db.session.query(
-        StudyProgram.name.label('study_program_name'),
-        Project.level,
-        func.count(Project.id).label('project_count'),
-        func.avg(Evaluation.total_score).label('average_score')
-    ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id)
-
     if level:
-        study_program_query = study_program_query.filter(Project.level == level)
-    if start_date:
-        study_program_query = study_program_query.filter(Project.created_at >= start_date)
-    if end_date:
-        study_program_query = study_program_query.filter(Project.created_at <= end_date)
-
-    study_program_rows = study_program_query.group_by(StudyProgram.id, Project.level).all()
-    study_programs = [{
-        "study_program_name": row.study_program_name,
-        "level": row.level.value if isinstance(row.level, ProjectLevel) else row.level,
-        "project_count": row.project_count,
-        "average_score": round(row.average_score, 2) if row.average_score is not None else None
-    } for row in study_program_rows]
+        study_program_query = db.session.query(
+            StudyProgram.name.label('study_program_name'),
+            Project.level,
+            func.count(Project.id).label('project_count'),
+            func.avg(Evaluation.total_score).label('average_score')
+        ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id).filter(Project.level == level)
+        
+        if start_date:
+            study_program_query = study_program_query.filter(Project.created_at >= start_date)
+        if end_date:
+            study_program_query = study_program_query.filter(Project.created_at <= end_date)
+            
+        study_program_rows = study_program_query.group_by(StudyProgram.id, Project.level).all()
+        
+        study_programs = [{
+            "study_program_name": row.study_program_name,
+            "level": row.level.value if isinstance(row.level, ProjectLevel) else row.level,
+            "project_count": row.project_count,
+            "average_score": round(row.average_score, 2) if row.average_score is not None else None
+        } for row in study_program_rows]
+    else:
+        study_program_query = db.session.query(
+            StudyProgram.name.label('study_program_name'),
+            func.count(Project.id).label('project_count'),
+            func.avg(Evaluation.total_score).label('average_score')
+        ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id)
+        
+        if start_date:
+            study_program_query = study_program_query.filter(Project.created_at >= start_date)
+        if end_date:
+            study_program_query = study_program_query.filter(Project.created_at <= end_date)
+            
+        study_program_rows = study_program_query.group_by(StudyProgram.id).all()
+        
+        study_programs = [{
+            "study_program_name": row.study_program_name,
+            "level": None, # Aggregated across levels
+            "project_count": row.project_count,
+            "average_score": round(row.average_score, 2) if row.average_score is not None else None
+        } for row in study_program_rows]
 
     top_projects_query = db.session.query(
         Project.title,
@@ -479,11 +499,11 @@ def create_course():
     except ValidationError as err:
         return jsonify({"error": "Validation error", "details": err.messages}), 400
     
-    # Validate study program code format: 2-3 letters followed by 200 or 400
+    # Validate study program code format: 2-6 letters (e.g., CS, ISA, SWE)
     import re
     code = data['code'].upper().strip()
-    if not re.match(r'^[A-Z]{2,3}(200|400)$', code):
-        return jsonify({"error": "Study program code must be 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)"}), 400
+    if not re.match(r'^[A-Z]{2,6}$', code):
+        return jsonify({"error": "Study program code must be 2-6 letters (e.g., CS, IT, ISA)"}), 400
     
     data['code'] = code
     
@@ -511,11 +531,11 @@ def update_course(course_id):
         course = StudyProgram.query.get_or_404(course_id)
         data = course_schema.load(request.json)
         
-        # Validate study program code format: 2-3 letters followed by 200 or 400
+        # Validate study program code format: 2-6 letters (e.g., CS, ISA, SWE)
         import re
         code = data['code'].upper().strip()
-        if not re.match(r'^[A-Z]{2,3}(200|400)$', code):
-            return jsonify({"error": "Study program code must be 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)"}), 400
+        if not re.match(r'^[A-Z]{2,6}$', code):
+            return jsonify({"error": "Study program code must be 2-6 letters (e.g., CS, IT, ISA)"}), 400
         
         data['code'] = code
         
@@ -711,10 +731,15 @@ def create_my_project():
         if not current_user or not student:
             return jsonify({"error": "Access denied"}), 403
         
-        # Check if student already has a project (one-to-one relationship)
+        # Check if student already has a project
         existing_project = Project.query.filter_by(student_id=student.id).first()
         if existing_project:
-            return jsonify({"error": "You already have a project. Each student can only have one project."}), 400
+            # If the project is rejected, allow creating a new one by deleting the old one
+            if existing_project.status == ProjectStatus.REJECTED:
+                db.session.delete(existing_project)
+                db.session.flush() # Ensure it's deleted before creating new one
+            else:
+                return jsonify({"error": "You already have an active or pending project. Each student can only have one project."}), 400
         
         # Get request data
         data = request.json
@@ -928,23 +953,21 @@ def reject_project(project_id):
             db.session.rollback()
             return jsonify({"error": f"Failed to reject project: {error}"}), 500
         
-        # Store rejection reason in description if provided (or could add a separate field)
+        # Store rejection reason
         if rejection_reason:
-            project.description = (project.description or '') + f"\n\n[Rejection Reason: {rejection_reason}]"
+            project.rejection_reason = rejection_reason
         
         # Create notification for student
         student_user = project.student.user if project.student else None
         if student_user:
             message = f"Your project '{project.title}' has been rejected."
-            if rejection_reason:
-                message += f" Reason: {rejection_reason}"
             create_notification(
                 user_id=student_user.id,
                 title="Project Rejected",
                 message=message,
                 notification_type="error",
-                action_label="View project",
-                action_url="/dashboard"  # Link to student dashboard
+                action_label="View reason",
+                action_url="/dashboard"  # Link to student dashboard which will show details
             )
         
         db.session.commit()
@@ -1648,28 +1671,41 @@ def get_performance_by_course():
     # Get level from query parameter
     level_param = request.args.get('level')
     
-    query = db.session.query(
-        StudyProgram.name,
-        Project.level,
-        func.avg(Evaluation.total_score).label('avg_score'),
-        func.count(Evaluation.id).label('evaluation_count')
-    ).select_from(StudyProgram).join(Project, StudyProgram.id == Project.study_program_id).join(
-        Evaluation, Project.id == Evaluation.project_id
-    )
-    
-    # Filter by level if provided
     if level_param:
         level = ProjectLevel(int(level_param))
-        query = query.filter(Project.level == level)
-    
-    results = query.group_by(StudyProgram.id, Project.level).all()
-    
-    return jsonify([{
-        'study_program_name': result.name,
-        'level': result.level.value if isinstance(result.level, ProjectLevel) else result.level,
-        'average_score': round(result.avg_score, 2),
-        'evaluation_count': result.evaluation_count
-    } for result in results]), 200
+        query = db.session.query(
+            StudyProgram.name,
+            Project.level,
+            func.avg(Evaluation.total_score).label('avg_score'),
+            func.count(Evaluation.id).label('evaluation_count')
+        ).select_from(StudyProgram).join(Project, StudyProgram.id == Project.study_program_id).join(
+            Evaluation, Project.id == Evaluation.project_id
+        ).filter(Project.level == level).group_by(StudyProgram.id, Project.level)
+        
+        results = query.all()
+        return jsonify([{
+            'study_program_name': result.name,
+            'level': result.level.value if isinstance(result.level, ProjectLevel) else result.level,
+            'average_score': round(result.avg_score, 2),
+            'evaluation_count': result.evaluation_count
+        } for result in results]), 200
+    else:
+        # Aggregate across all levels
+        query = db.session.query(
+            StudyProgram.name,
+            func.avg(Evaluation.total_score).label('avg_score'),
+            func.count(Evaluation.id).label('evaluation_count')
+        ).select_from(StudyProgram).join(Project, StudyProgram.id == Project.study_program_id).join(
+            Evaluation, Project.id == Evaluation.project_id
+        ).group_by(StudyProgram.id)
+        
+        results = query.all()
+        return jsonify([{
+            'study_program_name': result.name,
+            'level': None, # No specific level
+            'average_score': round(result.avg_score, 2),
+            'evaluation_count': result.evaluation_count
+        } for result in results]), 200
 
 @api_bp.route('/analytics/pipeline', methods=['GET'])
 @jwt_required()
@@ -1836,11 +1872,21 @@ def create_deadline():
         data = request.json
         level = ProjectLevel(data['level'])
         
+        # Parse deadline string - handle both ISO and datetime-local formats
+        deadline_str = data['deadline']
+        try:
+            if 'T' in deadline_str and len(deadline_str) == 16: # datetime-local format: YYYY-MM-DDTHH:MM
+                deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%dT%H:%M')
+            else:
+                deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+        except ValueError:
+            deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+
         # Check if deadline already exists for this level
         existing = Deadline.query.filter_by(level=level).first()
         if existing:
             # Update existing deadline
-            existing.deadline = datetime.fromisoformat(data['deadline'].replace('Z', '+00:00'))
+            existing.deadline = deadline_dt
             existing.updated_at = datetime.utcnow()
             db.session.commit()
             return jsonify(existing.to_dict()), 200
@@ -1848,14 +1894,14 @@ def create_deadline():
         # Create new deadline
         deadline = Deadline(
             level=level,
-            deadline=datetime.fromisoformat(data['deadline'].replace('Z', '+00:00'))
+            deadline=deadline_dt
         )
         db.session.add(deadline)
         db.session.commit()
         return jsonify(deadline.to_dict()), 201
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to create deadline"}), 500
+        return jsonify({"error": "Failed to create deadline", "details": str(e)}), 500
 
 @api_bp.route('/deadlines/<int:deadline_id>', methods=['PUT'])
 def update_deadline(deadline_id):
@@ -1863,14 +1909,23 @@ def update_deadline(deadline_id):
         deadline = Deadline.query.get_or_404(deadline_id)
         data = request.json
         
-        deadline.deadline = datetime.fromisoformat(data['deadline'].replace('Z', '+00:00'))
+        deadline_str = data['deadline']
+        try:
+            if 'T' in deadline_str and len(deadline_str) == 16:
+                deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%dT%H:%M')
+            else:
+                deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+        except ValueError:
+            deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+
+        deadline.deadline = deadline_dt
         deadline.updated_at = datetime.utcnow()
         db.session.commit()
         
         return jsonify(deadline.to_dict()), 200
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to update deadline"}), 500
+        return jsonify({"error": "Failed to update deadline", "details": str(e)}), 500
 
 @api_bp.route('/deadlines/missed', methods=['GET'])
 @jwt_required()
@@ -2673,6 +2728,7 @@ def get_my_dashboard():
                 "status": project.status.value if isinstance(project.status, ProjectStatus) else project.status,
                 "level": project.level.value,
                 "submitted_at": project.submitted_at.isoformat() if project.submitted_at else None,
+                "rejection_reason": project.rejection_reason,
                 "status_timeline": timeline,
                 "has_evaluation": has_evaluation,
                 "total_score": total_score
@@ -2739,6 +2795,7 @@ def get_my_project(project_id):
             "description": project.description,
             "level": project.level.value,
             "status": project.status.value if isinstance(project.status, ProjectStatus) else project.status,
+            "rejection_reason": project.rejection_reason,
             "study_program": {
                 "id": study_program.id if study_program else None,
                 "code": study_program.code if study_program else None,
