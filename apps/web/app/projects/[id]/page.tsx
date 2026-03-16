@@ -1,7 +1,18 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { useProject, useProjectEvaluations, useCreateEvaluation, useUpdateEvaluation, useEvaluationTemplates, useDeleteProject } from '../../../lib/hooks'
+import { 
+  useProject, 
+  useProjectEvaluations, 
+  useCreateEvaluation, 
+  useUpdateEvaluation, 
+  useDeleteEvaluation, 
+  useEvaluationTemplates, 
+  useDeleteProject,
+  useApproveProject,
+  useRejectProject,
+  useReleaseScores
+} from '../../../lib/hooks'
 import { useAuthStore, useUIStore } from '../../../lib/stores'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
@@ -36,7 +47,51 @@ export default function ProjectDetailPage() {
   const projectEvaluation = evaluationsData?.project_evaluation || null
   const presentationEvaluation = evaluationsData?.presentation_evaluation || null
   const allEvaluations = evaluationsData?.all_evaluations || []
+
+  const approveProjectMutation = useApproveProject()
+  const rejectProjectMutation = useRejectProject()
+  const releaseScoresMutation = useReleaseScores()
+
+  // Release scores logic
+  const handleReleaseScores = () => {
+    setDeleteType('SUBMISSION') // Using SUBMISSION type for consistency in verification
+    setVerificationConfig({
+      title: 'Release Scores to Student',
+      description: `You are about to release all evaluation scores for "${project?.title || 'this project'}" to the student.`,
+      highlight: 'The student will receive a notification and will be able to view their final scores and feedback on their dashboard. This action is final.',
+      confirmLabel: 'Release scores now',
+      tone: 'info',
+    })
+    // We use a special marker in pendingAction or just rely on deleteType + additional state
+    setPendingAction({ type: 'RELEASE_SCORES' } as any)
+  }
+
+  const executeReleaseScores = async () => {
+    try {
+      setVerificationLoading(true)
+      await releaseScoresMutation.mutateAsync(projectId)
+      addNotification('Scores released to student successfully.', 'success', {
+        title: 'Scores released',
+        audience: 'ADMIN',
+        persistent: true,
+      })
+      closeVerificationModal()
+    } catch (error: any) {
+      addNotification(error.response?.data?.error || 'Failed to release scores', 'error')
+    } finally {
+      setVerificationLoading(false)
+    }
+  }
   
+  // Helper function to calculate grade based on percentage
+  const calculateGrade = (percentage: number) => {
+    if (percentage >= 80) return '1'
+    if (percentage >= 70) return '2.1'
+    if (percentage >= 60) return '2.2'
+    if (percentage >= 50) return '3'
+    return 'F'
+  }
+
   // Helper function to calculate total score and max score from marks
   const calculateScoreFromMarks = (evaluation: any) => {
     if (!evaluation || !evaluation.marks || evaluation.marks.length === 0) {
@@ -70,9 +125,10 @@ export default function ProjectDetailPage() {
   const [evaluationModalOpen, setEvaluationModalOpen] = useState(false)
   const [evaluationType, setEvaluationType] = useState<'PROJECT' | 'PRESENTATION' | null>(null)
   const [editingEvaluation, setEditingEvaluation] = useState<any>(null)
-  const { data: templates } = useEvaluationTemplates()
+  const { data: templates } = useEvaluationTemplates(project?.level)
   const createEvaluationMutation = useCreateEvaluation()
   const updateEvaluationMutation = useUpdateEvaluation()
+  const deleteEvaluationMutation = useDeleteEvaluation()
   const deleteProjectMutation = useDeleteProject()
   const { register, handleSubmit, formState: { errors }, setValue, watch, reset } = useForm<EvaluationFormData>()
   
@@ -84,7 +140,8 @@ export default function ProjectDetailPage() {
     tone?: 'info' | 'danger'
   } | null>(null)
   const [pendingAction, setPendingAction] = useState<EvaluationFormData | null>(null)
-  const [pendingDelete, setPendingDelete] = useState(false)
+  const [deleteType, setDeleteType] = useState<'PROJECT' | 'EVALUATION' | 'SUBMISSION' | null>(null)
+  const [evaluationToDeleteId, setEvaluationToDeleteId] = useState<number | null>(null)
   const [verificationLoading, setVerificationLoading] = useState(false)
   
   // Get marks from form or evaluation
@@ -92,106 +149,124 @@ export default function ProjectDetailPage() {
   const watchedMarksArray = Array.isArray(watchedMarks) ? watchedMarks : []
   
   const openEvaluationModal = (type: 'PROJECT' | 'PRESENTATION', existingEvaluation?: any) => {
-    // Prevent evaluation of rejected projects
-    if (project?.status === 'rejected') {
-      addNotification('Cannot evaluate a rejected project. The student must create a new project.', 'error', { title: 'Evaluation Not Allowed' })
-      return
-    }
-    
     setEvaluationType(type)
     setEditingEvaluation(existingEvaluation || null)
-    
-    // Get template or use defaults
-    const templateKey = type === 'PROJECT' ? 'project' : 'presentation'
-    const template = templates?.[templateKey]
-    let initialMarks: Array<{criterion_name: string; max_score: number; score: number; comments: string}> = []
-    
-    if (existingEvaluation && existingEvaluation.marks) {
-      // Load existing evaluation marks
-      initialMarks = existingEvaluation.marks.map((mark: any) => ({
-        criterion_name: mark.criterion_name || '',
-        max_score: mark.max_score || 0,
-        score: mark.score || 0,
-        comments: mark.comments || ''
-      }))
-    } else if (template && template.criteria && Array.isArray(template.criteria)) {
-      initialMarks = template.criteria.map((criterion: any) => ({
-        criterion_name: criterion.criterion_name || '',
-        max_score: criterion.max_score || 0,
-        score: 0,
-        comments: ''
-      }))
+
+    if (existingEvaluation) {
+      // Edit existing evaluation: use existing marks
+      reset({
+        evaluationType: type,
+        comments: existingEvaluation.comments || '',
+        marks: existingEvaluation.marks || []
+      })
     } else {
-      // Use default criteria
-      const defaultCriteria = type === 'PROJECT' 
-        ? [
-            { criterion_name: 'Code Quality', max_score: 20 },
-            { criterion_name: 'Documentation', max_score: 20 },
-            { criterion_name: 'Functionality', max_score: 30 }
-          ]
-        : [
-            { criterion_name: 'Clarity & Communication', max_score: 10 },
-            { criterion_name: 'Visual Presentation', max_score: 10 },
-            { criterion_name: 'Technical Explanation', max_score: 10 }
-          ]
-      
-      initialMarks = defaultCriteria.map((criterion: any) => ({
-        criterion_name: criterion.criterion_name,
-        max_score: criterion.max_score,
-        score: 0,
-        comments: ''
-      }))
+      // New evaluation: get criteria from templates
+      const template = type === 'PROJECT' ? templates?.project : templates?.presentation
+      const criteria = template?.criteria || []
+
+      reset({
+        evaluationType: type,
+        comments: '',
+        marks: criteria.map((c: any) => ({
+          criterion_name: c.criterion_name,
+          max_score: c.max_score,
+          score: 0,
+          comments: ''
+        }))
+      })
     }
-    
-    setValue('evaluationType', type)
-    setValue('marks', initialMarks)
-    setValue('comments', existingEvaluation?.comments || '')
-    reset({
-      evaluationType: type,
-      marks: initialMarks,
-      comments: existingEvaluation?.comments || ''
-    })
-    
+
     setEvaluationModalOpen(true)
   }
-  
+
   const closeEvaluationModal = () => {
     setEvaluationModalOpen(false)
     setEvaluationType(null)
     setEditingEvaluation(null)
     reset()
   }
-  
+
   const handleEvaluationSubmit = (data: EvaluationFormData) => {
+    // Basic validation to prevent NaN or division by zero
+    if (!data.marks || data.marks.length === 0) {
+      addNotification('No criteria loaded. Please refresh the page.', 'error')
+      return
+    }
+
     // Calculate total score and max score, ensuring numbers are used
     const totalScore = data.marks.reduce((sum, mark) => {
       const score = typeof mark.score === 'number' ? mark.score : parseFloat(mark.score) || 0
       return sum + score
     }, 0)
-    
+
     const totalMaxScore = data.marks.reduce((sum, mark) => {
       const maxScore = typeof mark.max_score === 'number' ? mark.max_score : parseFloat(mark.max_score) || 0
       return sum + maxScore
     }, 0)
-    
+
+    const percentage = totalMaxScore > 0 ? (totalScore / totalMaxScore) * 100 : 0
+
     setPendingAction(data)
+    setDeleteType('SUBMISSION')
     setVerificationConfig({
       title: editingEvaluation ? `Update ${data.evaluationType === 'PROJECT' ? 'project' : 'presentation'} evaluation` : `Submit ${data.evaluationType === 'PROJECT' ? 'project' : 'presentation'} evaluation`,
       description: editingEvaluation 
         ? `You are about to update the evaluation for ${project?.title || 'this project'}.`
-        : `You are about to finalize ${data.marks.length} criteria for ${project?.title || 'this project'}. Students will be notified once this evaluation is saved.`,
-      highlight: `Scores to ${editingEvaluation ? 'update' : 'publish'}: ${totalScore} / ${totalMaxScore} points • ${data.marks.length} criteria.`,
+        : `You are about to finalize ${data.marks.length} criteria for ${project?.title || 'this project'}. The student will receive a notification with their score once this evaluation is saved.`,
+      highlight: `Final Score: ${totalScore} / ${totalMaxScore} points (${percentage.toFixed(1)}%) • Grade: ${calculateGrade(percentage)}`,
       confirmLabel: editingEvaluation ? 'Update evaluation' : 'Submit and notify student',
       tone: 'info',
     })
   }
-  
-  const executePendingAction = async () => {
-    if (!pendingAction) return
-    
+
+  const handleDeleteEvaluation = (evaluationId: number, type: string) => {
+    setEvaluationToDeleteId(evaluationId)
+    setDeleteType('EVALUATION')
+    setVerificationConfig({
+      title: 'Delete Evaluation',
+      description: `You are about to permanently delete the ${type.toLowerCase()} evaluation for this project.`,
+      highlight: 'The project status will be reverted and the student will no longer see these scores.',
+      confirmLabel: 'Delete Evaluation',
+      tone: 'danger',
+    })
+  }
+
+  const executeDeleteEvaluation = async () => {
+    if (!evaluationToDeleteId) return
+
     try {
       setVerificationLoading(true)
-      
+      await deleteEvaluationMutation.mutateAsync({
+        evaluationId: evaluationToDeleteId,
+        projectId: projectId
+      })
+
+      addNotification('Evaluation deleted successfully', 'success', {
+        title: 'Evaluation deleted',
+        audience: 'ADMIN',
+        persistent: true
+      })
+
+      closeVerificationModal()
+    } catch (error: any) {
+      addNotification(error.response?.data?.error || 'Failed to delete evaluation', 'error')
+    } finally {
+      setVerificationLoading(false)
+    }
+  }
+
+  const executePendingAction = async () => {
+    if (!pendingAction || deleteType !== 'SUBMISSION') return
+
+    try {
+      setVerificationLoading(true)
+
+      // Handle score release separately
+      if ((pendingAction as any).type === 'RELEASE_SCORES') {
+        await executeReleaseScores()
+        return
+      }
+
       // Ensure marks are properly formatted with numeric values
       const formattedMarks = pendingAction.marks.map((mark: any) => ({
         criterion_name: mark.criterion_name,
@@ -199,19 +274,19 @@ export default function ProjectDetailPage() {
         score: typeof mark.score === 'number' ? mark.score : parseFloat(mark.score) || 0,
         comments: mark.comments || ''
       }))
-      
+
       if (editingEvaluation) {
-        // Update existing evaluation - pass projectId so the hook can invalidate the right queries
+        // Update existing evaluation
         await updateEvaluationMutation.mutateAsync({
           evaluationId: editingEvaluation.id,
-          projectId: projectId, // Pass projectId explicitly
+          projectId: projectId,
           data: {
             comments: pendingAction.comments || '',
             marks: formattedMarks,
           }
         })
-        
-        addNotification('Evaluation updated successfully.', 'success', {
+
+        addNotification('Evaluation updated successfully. You can release all scores once both evaluations are complete.', 'success', {
           title: 'Evaluation updated',
           audience: 'ADMIN',
           persistent: true,
@@ -226,20 +301,20 @@ export default function ProjectDetailPage() {
             marks: formattedMarks,
           },
         })
-        
-        addNotification('Evaluation submitted successfully.', 'success', {
-          title: 'Evaluation sent',
+
+        addNotification('Evaluation saved successfully. You can release all scores once both evaluations are complete.', 'success', {
+          title: 'Evaluation saved',
           audience: 'ADMIN',
           persistent: true,
         })
       }
-      
-      closeEvaluationModal()
-      setVerificationConfig(null)
-      setPendingAction(null)
-      
-      // Mutation hooks handle invalidation and refetching automatically
-      // No need to manually refetch here
+
+      // Success: Close everything and reset state
+      setEvaluationModalOpen(false)
+      setEditingEvaluation(null)
+      reset()
+      closeVerificationModal()
+
     } catch (error: any) {
       console.error('Evaluation submission error:', error)
       addNotification(error?.response?.data?.error || error?.message || 'Failed to submit evaluation.', 'error', {
@@ -251,16 +326,17 @@ export default function ProjectDetailPage() {
       setVerificationLoading(false)
     }
   }
-  
+
   const closeVerificationModal = () => {
     if (verificationLoading) return
     setVerificationConfig(null)
     setPendingAction(null)
-    setPendingDelete(false)
+    setDeleteType(null)
+    setEvaluationToDeleteId(null)
   }
 
   const handleDeleteProject = () => {
-    setPendingDelete(true)
+    setDeleteType('PROJECT')
     setVerificationConfig({
       title: 'Delete Project',
       description: `You are about to permanently delete "${project?.title || 'this project'}". This action cannot be undone.`,
@@ -273,7 +349,7 @@ export default function ProjectDetailPage() {
   }
 
   const executeDeleteProject = async () => {
-    if (!pendingDelete) return
+    if (deleteType !== 'PROJECT') return
     
     try {
       setVerificationLoading(true)
@@ -295,9 +371,9 @@ export default function ProjectDetailPage() {
         audience: 'ADMIN',
         persistent: true,
       })
+    } finally {
       setVerificationLoading(false)
-      setPendingDelete(false)
-      setVerificationConfig(null)
+      closeVerificationModal()
     }
   }
 
@@ -391,12 +467,29 @@ export default function ProjectDetailPage() {
           <div className="flex space-x-3">
             {isAdmin && (
               <>
+                {projectEvaluation && presentationEvaluation && !project.scores_released && (
+                  <button
+                    onClick={handleReleaseScores}
+                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 shadow-sm"
+                  >
+                    <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                    Release Scores to Student
+                  </button>
+                )}
                 {!projectEvaluation && (
                   <button
                     onClick={() => openEvaluationModal('PROJECT')}
-                    disabled={project?.status === 'rejected'}
+                    disabled={project?.status === 'rejected' || !project?.github_link || !project?.documentation_link}
                     className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
+                    title={
+                      project?.status === 'rejected' 
+                        ? 'Cannot evaluate a rejected project' 
+                        : !project?.github_link || !project?.documentation_link
+                        ? 'Evaluation is only possible after both GitHub and Documentation links are submitted'
+                        : undefined
+                    }
                   >
                     <Monitor className="mr-2 h-4 w-4" />
                     Evaluate Project
@@ -405,9 +498,15 @@ export default function ProjectDetailPage() {
                 {!presentationEvaluation && (
                   <button
                     onClick={() => openEvaluationModal('PRESENTATION')}
-                    disabled={project?.status === 'rejected'}
+                    disabled={project?.status === 'rejected' || !project?.github_link || !project?.documentation_link}
                     className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
+                    title={
+                      project?.status === 'rejected' 
+                        ? 'Cannot evaluate a rejected project' 
+                        : !project?.github_link || !project?.documentation_link
+                        ? 'Evaluation is only possible after both GitHub and Documentation links are submitted'
+                        : undefined
+                    }
                   >
                     <BarChart3 className="mr-2 h-4 w-4" />
                     Evaluate Presentation
@@ -746,20 +845,17 @@ export default function ProjectDetailPage() {
                             </div>
                           ))
                         ) : (
-                          <>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-600 dark:text-gray-400">Code Quality:</span>
-                              <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.code_quality || 0}/20</span>
+                          // Fallback to current template if no marks (old evaluations)
+                          templates?.project?.criteria.map((c: any, idx: number) => (
+                            <div key={idx} className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">{c.criterion_name}:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">
+                                {idx === 0 ? (projectEvaluation.code_quality || 0) : 
+                                 idx === 1 ? (projectEvaluation.documentation_score || 0) : 
+                                 idx === 2 ? (projectEvaluation.functionality_score || 0) : 0}/{c.max_score}
+                              </span>
                             </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-600 dark:text-gray-400">Documentation:</span>
-                              <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.documentation_score || 0}/20</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-600 dark:text-gray-400">Functionality:</span>
-                              <span className="font-medium text-gray-900 dark:text-gray-100">{projectEvaluation.functionality_score || 0}/30</span>
-                            </div>
-                          </>
+                          ))
                         )}
                       </div>
                       {projectEvaluation.comments && (
@@ -773,14 +869,22 @@ export default function ProjectDetailPage() {
                           {new Date(projectEvaluation.created_at).toLocaleDateString()}
                         </div>
                         {isAdmin && (
-                          <button
-                            onClick={() => openEvaluationModal('PROJECT', projectEvaluation)}
-                            disabled={project?.status === 'rejected'}
-                            className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
-                          >
-                            Edit
-                          </button>
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => openEvaluationModal('PROJECT', projectEvaluation)}
+                              disabled={project?.status === 'rejected'}
+                              className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                              title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteEvaluation(projectEvaluation.id, 'Project')}
+                              className="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 font-medium"
+                            >
+                              Delete
+                            </button>
+                          </div>
                         )}
                       </div>
                     </>
@@ -840,20 +944,17 @@ export default function ProjectDetailPage() {
                             </div>
                           ))
                         ) : (
-                          <>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-600 dark:text-gray-400">Clarity & Communication:</span>
-                              <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.clarity_communication || 0}/10</span>
+                          // Fallback to current template if no marks (old evaluations)
+                          templates?.presentation?.criteria.map((c: any, idx: number) => (
+                            <div key={idx} className="flex justify-between text-sm">
+                              <span className="text-gray-600 dark:text-gray-400">{c.criterion_name}:</span>
+                              <span className="font-medium text-gray-900 dark:text-gray-100">
+                                {idx === 0 ? (presentationEvaluation.clarity_communication || 0) : 
+                                 idx === 1 ? (presentationEvaluation.visual_presentation || 0) : 
+                                 idx === 2 ? (presentationEvaluation.technical_explanation || 0) : 0}/{c.max_score}
+                              </span>
                             </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-600 dark:text-gray-400">Visual Presentation:</span>
-                              <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.visual_presentation || 0}/10</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-600 dark:text-gray-400">Technical Explanation:</span>
-                              <span className="font-medium text-gray-900 dark:text-gray-100">{presentationEvaluation.technical_explanation || 0}/10</span>
-                            </div>
-                          </>
+                          ))
                         )}
                       </div>
                       {presentationEvaluation.comments && (
@@ -867,14 +968,22 @@ export default function ProjectDetailPage() {
                           {new Date(presentationEvaluation.created_at).toLocaleDateString()}
                         </div>
                         {isAdmin && (
-                          <button
-                            onClick={() => openEvaluationModal('PRESENTATION', presentationEvaluation)}
-                            disabled={project?.status === 'rejected'}
-                            className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
-                          >
-                            Edit
-                          </button>
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => openEvaluationModal('PRESENTATION', presentationEvaluation)}
+                              disabled={project?.status === 'rejected'}
+                              className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                              title={project?.status === 'rejected' ? 'Cannot evaluate a rejected project' : undefined}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteEvaluation(presentationEvaluation.id, 'Presentation')}
+                              className="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 font-medium"
+                            >
+                              Delete
+                            </button>
+                          </div>
                         )}
                       </div>
                     </>
@@ -1074,8 +1183,12 @@ export default function ProjectDetailPage() {
         highlight={verificationConfig?.highlight}
         confirmLabel={verificationConfig?.confirmLabel || 'Confirm'}
         tone={verificationConfig?.tone || 'info'}
-        loading={verificationLoading || createEvaluationMutation.isPending || updateEvaluationMutation.isPending || deleteProjectMutation.isPending}
-        onConfirm={pendingDelete ? executeDeleteProject : executePendingAction}
+        loading={verificationLoading || createEvaluationMutation.isPending || updateEvaluationMutation.isPending || deleteProjectMutation.isPending || deleteEvaluationMutation.isPending}
+        onConfirm={() => {
+          if (deleteType === 'PROJECT') executeDeleteProject()
+          else if (deleteType === 'EVALUATION') executeDeleteEvaluation()
+          else executePendingAction()
+        }}
         onCancel={closeVerificationModal}
       />
     </div>

@@ -208,11 +208,16 @@ export const projectsAPI = {
     return response.data
   },
 
-  reject: async (id: number, reason?: string) => {
-    const response = await apiClient.post(`/projects/${id}/reject`, reason ? { reason } : {})
+  reject: async (id: number, reason: string) => {
+    const response = await apiClient.post(`/projects/${id}/reject`, { reason })
     return response.data
+  },
+
+  releaseScores: async (id: number) => {
+    const response = await apiClient.post(`/projects/${id}/release-scores`)
+    return response.data
+  },
   }
-}
 
 export const evaluationsAPI = {
   create: async (evaluationData: any) => {
@@ -220,8 +225,20 @@ export const evaluationsAPI = {
     return response.data
   },
 
-  getTemplates: async () => {
-    const response = await apiClient.get('/evaluation-templates')
+  getTemplates: async (level?: number) => {
+    const response = await apiClient.get('/evaluation-templates', {
+      params: level ? { level } : {}
+    })
+    return response.data
+  },
+
+  updateTemplate: async (type: string, data: any) => {
+    const response = await apiClient.put(`/evaluation-templates/${type.toLowerCase()}`, data)
+    return response.data
+  },
+
+  resetTemplates: async () => {
+    const response = await apiClient.post('/evaluation-templates/reset')
     return response.data
   },
 
@@ -232,6 +249,11 @@ export const evaluationsAPI = {
 
   update: async (id: number, evaluationData: any) => {
     const response = await apiClient.patch(`/evaluations/${id}`, evaluationData)
+    return response.data
+  },
+
+  delete: async (id: number) => {
+    const response = await apiClient.delete(`/evaluations/${id}`)
     return response.data
   },
 

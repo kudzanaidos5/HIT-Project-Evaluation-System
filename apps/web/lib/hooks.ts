@@ -102,12 +102,9 @@ export const useApproveProject = () => {
 
 export const useRejectProject = () => {
   const queryClient = useQueryClient()
-
   return useMutation({
-    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
-      projectsAPI.reject(id, reason),
+    mutationFn: ({ id, reason }: { id: number; reason: string }) => projectsAPI.reject(id, reason),
     onSuccess: (_, { id }) => {
-      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS] })
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS, id] })
       // Also invalidate student dashboard queries so students see the update immediately
       queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
@@ -116,11 +113,46 @@ export const useRejectProject = () => {
   })
 }
 
-export const useEvaluationTemplates = () => {
+export const useReleaseScores = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => projectsAPI.releaseScores(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS, id] })
+      // Also invalidate student dashboard queries so students see the update immediately
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
+    },
+  })
+}
+
+// Evaluation Hooks
+export const useEvaluationTemplates = (level?: number) => {
   return useQuery({
-    queryKey: [QUERY_KEYS.EVALUATIONS, 'templates'],
-    queryFn: evaluationsAPI.getTemplates,
+    queryKey: [QUERY_KEYS.EVALUATION_TEMPLATES, level],
+    queryFn: () => evaluationsAPI.getTemplates(level),
     staleTime: 10 * 60 * 1000, // 10 minutes - templates don't change often
+  })
+}
+
+export const useUpdateEvaluationTemplate = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ type, data }: { type: string; data: any }) =>
+      evaluationsAPI.updateTemplate(type, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATION_TEMPLATES] })
+    },
+  })
+}
+
+export const useResetEvaluationTemplates = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: evaluationsAPI.resetTemplates,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATION_TEMPLATES] })
+    },
   })
 }
 
@@ -326,6 +358,28 @@ export const useUpdateEvaluation = () => {
 
       // Invalidate specific evaluation and analytics
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, evaluationId] })
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.ANALYTICS] })
+    },
+  })
+}
+
+export const useDeleteEvaluation = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ evaluationId, projectId }: { evaluationId: number; projectId: number }) =>
+      evaluationsAPI.delete(evaluationId),
+    onSuccess: (_, variables) => {
+      const { projectId } = variables
+
+      // Invalidate and refetch the specific project's evaluations
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, 'project', projectId] })
+      queryClient.refetchQueries({ queryKey: [QUERY_KEYS.EVALUATIONS, 'project', projectId] })
+
+      // Also invalidate the project itself to update status
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS, projectId] })
+      queryClient.refetchQueries({ queryKey: [QUERY_KEYS.PROJECTS, projectId] })
+
       queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.ANALYTICS] })
     },
   })

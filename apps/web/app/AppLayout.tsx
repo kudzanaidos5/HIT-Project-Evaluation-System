@@ -379,6 +379,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   setNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  removeAllReadNotifications,
   removeNotification,
   fetchNotifications,
   syncNotifications,
@@ -672,6 +673,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     onSelect={handleNotificationSelect}
                     onMarkAllRead={handleMarkVisibleNotificationsRead}
                     onRemove={removeNotification}
+                    onClearRead={removeAllReadNotifications}
                   />
                 )}
               </div>
@@ -865,6 +867,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                       }`}
                     >
                       Grade Classification
+                    </Link>
+                    <Link 
+                      href="/evaluation-templates" 
+                      className={`block px-3 py-1.5 text-sm rounded-md transition-all ${
+                        pathname === '/evaluation-templates'
+                          ? 'bg-blue-600/20 text-blue-700 dark:text-blue-400 font-medium'
+                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      Evaluation Criteria
                     </Link>
                   </div>
                 )}

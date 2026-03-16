@@ -159,6 +159,7 @@ class Project(db.Model):
     pdf_path = db.Column(db.String(500), nullable=True)
     submitted_at = db.Column(db.DateTime, nullable=True)
     rejection_reason = db.Column(db.Text, nullable=True)
+    scores_released = db.Column(db.Boolean, default=False)
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -188,7 +189,7 @@ class Project(db.Model):
             'id': self.id,
             'title': self.title,
             'description': self.description,
-            'level': self.level.value,
+            'level': self.level.value if isinstance(self.level, ProjectLevel) else self.level,
             'study_program_id': self.study_program_id,
             'study_program_name': study_program.name if study_program else None,
             'student_id': self.student_id,
@@ -199,6 +200,7 @@ class Project(db.Model):
             'pdf_path': self.pdf_path,
             'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
             'rejection_reason': self.rejection_reason,
+            'scores_released': self.scores_released,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
             'evaluation_count': self.evaluations.count()
@@ -324,7 +326,7 @@ class Deadline(db.Model):
     def to_dict(self):
         return {
             'id': self.id,
-            'level': self.level.value,
+            'level': self.level.value if isinstance(self.level, ProjectLevel) else self.level,
             'deadline': self.deadline.isoformat(),
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat()
@@ -371,4 +373,51 @@ class Notification(db.Model):
             'actionUrl': self.action_url,
             'audience': self.audience.value if self.audience else None,
             'userId': self.user_id
+        }
+
+class EvaluationTemplate(db.Model):
+    __tablename__ = 'evaluation_templates'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    evaluation_type = db.Column(db.Enum(EvaluationType), nullable=False)
+    level = db.Column(db.Enum(ProjectLevel), nullable=True)  # Null means universal template
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    criteria = db.relationship('EvaluationCriterion', backref='template', lazy='dynamic', cascade='all, delete-orphan')
+    
+    # Unique constraint: one template of each type per level
+    __table_args__ = (db.UniqueConstraint('evaluation_type', 'level', name='unique_template_type_level'),)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'evaluation_type': self.evaluation_type.value,
+            'level': self.level.value if self.level else None,
+            'criteria': [c.to_dict() for c in self.criteria.order_by(EvaluationCriterion.id).all()],
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat()
+        }
+
+class EvaluationCriterion(db.Model):
+    __tablename__ = 'evaluation_criteria'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    template_id = db.Column(db.Integer, db.ForeignKey('evaluation_templates.id'), nullable=False)
+    criterion_name = db.Column(db.String(100), nullable=False)
+    max_score = db.Column(db.Float, nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'template_id': self.template_id,
+            'criterion_name': self.criterion_name,
+            'max_score': self.max_score,
+            'description': self.description
         }

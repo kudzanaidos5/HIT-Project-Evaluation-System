@@ -74,7 +74,7 @@ export default function ProjectsPage() {
   const { data: projectsData, isLoading, error } = useProjects({
     search: searchTerm || undefined,
     status: statusFilter !== 'all' ? statusFilter : undefined,
-    level: levelFilter !== 'all' ? levelFilter : undefined,
+    level: levelFilter !== 'all' ? parseInt(levelFilter) : undefined,
     study_program_id: studyProgramFilter !== 'all' ? studyProgramFilter : undefined,
   })
   
