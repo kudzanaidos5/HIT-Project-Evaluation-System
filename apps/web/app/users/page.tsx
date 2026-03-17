@@ -40,6 +40,7 @@ export default function UserManagementPage() {
   const selectedRole = watch('role')
   const emailValue = watch('email')
   const registrationNumberValue = watch('registrationNumber')
+  const passwordValue = watch('password')
   
   // Clear registration number when role changes to ADMIN
   useEffect(() => {
@@ -67,7 +68,9 @@ export default function UserManagementPage() {
     setModalTitle('Add New User')
     setModalOpen(true)
     reset({
-      role: 'STUDENT' // Default to STUDENT so registration field shows immediately
+      role: 'STUDENT', // Default to STUDENT so registration field shows immediately
+      password: '',
+      confirmPassword: ''
     })
   }
 
@@ -79,6 +82,8 @@ export default function UserManagementPage() {
     setValue('email', user.email)
     setValue('role', user.role)
     setValue('registrationNumber', user.student_profile?.student_id || '')
+    setValue('password', '')
+    setValue('confirmPassword', '')
   }
 
   const closeModal = () => {
@@ -89,8 +94,8 @@ export default function UserManagementPage() {
 
   const onSubmit = async (data: UserFormData) => {
     try {
-      // Validate password confirmation for new users
-      if (!editingUser && data.password !== data.confirmPassword) {
+      // Validate password confirmation
+      if ((!editingUser || data.password) && data.password !== data.confirmPassword) {
         addNotification('Passwords do not match', 'error', { title: 'Validation Error', audience: 'ADMIN', persistent: true })
         return
       }
@@ -516,26 +521,26 @@ export default function UserManagementPage() {
               )}
             </div>
 
-            {!editingUser && (
-              <div className="form-group">
-                <label className="form-label">Confirm Password</label>
-                <input
-                  type="password"
-                  className="form-input"
-                  {...register('confirmPassword', { 
-                    required: 'Please confirm your password',
-                    validate: (value) => {
-                      const password = (document.querySelector('input[name="password"]') as HTMLInputElement)?.value
-                      return value === password || 'Passwords do not match'
+            <div className="form-group">
+              <label className="form-label">Confirm Password</label>
+              <input
+                type="password"
+                className="form-input"
+                {...register('confirmPassword', { 
+                  required: (passwordValue || !editingUser) ? 'Please confirm your password' : false,
+                  validate: (value) => {
+                    if (passwordValue && value !== passwordValue) {
+                      return 'Passwords do not match'
                     }
-                  })}
-                  placeholder="Confirm password"
-                />
-                {errors.confirmPassword && (
-                  <p className="text-red-500 text-sm mt-1">{errors.confirmPassword.message}</p>
-                )}
-              </div>
-            )}
+                    return true
+                  }
+                })}
+                placeholder="Confirm password"
+              />
+              {errors.confirmPassword && (
+                <p className="text-red-500 text-sm mt-1">{errors.confirmPassword.message}</p>
+              )}
+            </div>
 
             <div className="form-group">
               <label className="form-label">Role</label>

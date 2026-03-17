@@ -166,27 +166,47 @@ def _build_report_summary(level_param=None, start_date_str=None, end_date_str=No
         } for grade, count in grade_rows
     ]
 
-    study_program_query = db.session.query(
-        StudyProgram.name.label('study_program_name'),
-        Project.level,
-        func.count(Project.id).label('project_count'),
-        func.avg(Evaluation.total_score).label('average_score')
-    ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id)
-
     if level:
-        study_program_query = study_program_query.filter(Project.level == level)
-    if start_date:
-        study_program_query = study_program_query.filter(Project.created_at >= start_date)
-    if end_date:
-        study_program_query = study_program_query.filter(Project.created_at <= end_date)
-
-    study_program_rows = study_program_query.group_by(StudyProgram.id, Project.level).all()
-    study_programs = [{
-        "study_program_name": row.study_program_name,
-        "level": row.level.value if isinstance(row.level, ProjectLevel) else row.level,
-        "project_count": row.project_count,
-        "average_score": round(row.average_score, 2) if row.average_score is not None else None
-    } for row in study_program_rows]
+        study_program_query = db.session.query(
+            StudyProgram.name.label('study_program_name'),
+            Project.level,
+            func.count(Project.id).label('project_count'),
+            func.avg(Evaluation.total_score).label('average_score')
+        ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id).filter(Project.level == level)
+        
+        if start_date:
+            study_program_query = study_program_query.filter(Project.created_at >= start_date)
+        if end_date:
+            study_program_query = study_program_query.filter(Project.created_at <= end_date)
+            
+        study_program_rows = study_program_query.group_by(StudyProgram.id, Project.level).all()
+        
+        study_programs = [{
+            "study_program_name": row.study_program_name,
+            "level": row.level.value if isinstance(row.level, ProjectLevel) else row.level,
+            "project_count": row.project_count,
+            "average_score": round(row.average_score, 2) if row.average_score is not None else None
+        } for row in study_program_rows]
+    else:
+        study_program_query = db.session.query(
+            StudyProgram.name.label('study_program_name'),
+            func.count(Project.id).label('project_count'),
+            func.avg(Evaluation.total_score).label('average_score')
+        ).join(Project, StudyProgram.id == Project.study_program_id).outerjoin(Evaluation, Evaluation.project_id == Project.id)
+        
+        if start_date:
+            study_program_query = study_program_query.filter(Project.created_at >= start_date)
+        if end_date:
+            study_program_query = study_program_query.filter(Project.created_at <= end_date)
+            
+        study_program_rows = study_program_query.group_by(StudyProgram.id).all()
+        
+        study_programs = [{
+            "study_program_name": row.study_program_name,
+            "level": None, # Aggregated across levels
+            "project_count": row.project_count,
+            "average_score": round(row.average_score, 2) if row.average_score is not None else None
+        } for row in study_program_rows]
 
     top_projects_query = db.session.query(
         Project.title,
@@ -479,11 +499,11 @@ def create_course():
     except ValidationError as err:
         return jsonify({"error": "Validation error", "details": err.messages}), 400
     
-    # Validate study program code format: 2-3 letters followed by 200 or 400
+    # Validate study program code format: 2-6 letters (e.g., CS, ISA, SWE)
     import re
     code = data['code'].upper().strip()
-    if not re.match(r'^[A-Z]{2,3}(200|400)$', code):
-        return jsonify({"error": "Study program code must be 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)"}), 400
+    if not re.match(r'^[A-Z]{2,6}$', code):
+        return jsonify({"error": "Study program code must be 2-6 letters (e.g., CS, IT, ISA)"}), 400
     
     data['code'] = code
     
@@ -511,11 +531,11 @@ def update_course(course_id):
         course = StudyProgram.query.get_or_404(course_id)
         data = course_schema.load(request.json)
         
-        # Validate study program code format: 2-3 letters followed by 200 or 400
+        # Validate study program code format: 2-6 letters (e.g., CS, ISA, SWE)
         import re
         code = data['code'].upper().strip()
-        if not re.match(r'^[A-Z]{2,3}(200|400)$', code):
-            return jsonify({"error": "Study program code must be 2-3 letters followed by 200 or 400 (e.g., ISA200, CS400)"}), 400
+        if not re.match(r'^[A-Z]{2,6}$', code):
+            return jsonify({"error": "Study program code must be 2-6 letters (e.g., CS, IT, ISA)"}), 400
         
         data['code'] = code
         
@@ -580,35 +600,191 @@ def delete_course(course_id):
         print(f"Error deleting study program: {error_details}")  # Log for debugging
         return jsonify({"error": "Failed to delete study program", "details": str(e)}), 500
 
-# Evaluation Templates Route (must be before other evaluation routes)
+# Evaluation Templates Routes
 @api_bp.route('/evaluation-templates', methods=['GET'])
 @jwt_required()
 def get_evaluation_templates():
-    """Get available evaluation templates with their criteria"""
-    templates = {
-        'project': {
+    """Get available evaluation templates with their criteria, optionally filtered by level"""
+    from app.models.models import EvaluationTemplate, EvaluationType, ProjectLevel
+    
+    level_param = request.args.get('level')
+    query = EvaluationTemplate.query
+    
+    if level_param:
+        try:
+            level_enum = ProjectLevel(int(level_param))
+            # Filter for specific level OR universal templates (level is null)
+            query = query.filter((EvaluationTemplate.level == level_enum) | (EvaluationTemplate.level == None))
+        except ValueError:
+            pass # Ignore invalid level parameter
+            
+    db_templates = query.all()
+    
+    # Organize templates by type for easier frontend consumption
+    result = {
+        'project': None,
+        'presentation': None
+    }
+    
+    for t in db_templates:
+        t_dict = t.to_dict()
+        if t.evaluation_type == EvaluationType.PROJECT:
+            # If we have multiple (e.g. level-specific and universal), 
+            # level-specific takes precedence
+            if not result['project'] or (t.level is not None and result['project']['level'] is None):
+                result['project'] = t_dict
+        elif t.evaluation_type == EvaluationType.PRESENTATION:
+            if not result['presentation'] or (t.level is not None and result['presentation']['level'] is None):
+                result['presentation'] = t_dict
+                
+    # Fallback to hardcoded defaults if still missing
+    if not result['project']:
+        result['project'] = {
             'name': 'Project Evaluation',
             'description': 'Evaluation of project work: Code Quality, Documentation, and Functionality',
             'evaluation_type': 'PROJECT',
+            'level': int(level_param) if level_param else None,
             'criteria': [
                 {'criterion_name': 'Code Quality', 'max_score': 20, 'description': 'Code structure, organization, and adherence to best practices'},
                 {'criterion_name': 'Documentation', 'max_score': 20, 'description': 'Completeness and clarity of documentation'},
                 {'criterion_name': 'Functionality', 'max_score': 30, 'description': 'How well the project meets functional requirements'}
             ]
-        },
-        'presentation': {
+        }
+        
+    if not result['presentation']:
+        result['presentation'] = {
             'name': 'Presentation Evaluation',
             'description': 'Evaluation of presentation: Clarity & Communication, Visual Presentation, and Technical Explanation',
             'evaluation_type': 'PRESENTATION',
+            'level': int(level_param) if level_param else None,
             'criteria': [
                 {'criterion_name': 'Clarity & Communication', 'max_score': 10, 'description': 'Clear communication of ideas and concepts'},
                 {'criterion_name': 'Visual Presentation', 'max_score': 10, 'description': 'Quality of visual materials and slides'},
                 {'criterion_name': 'Technical Explanation', 'max_score': 10, 'description': 'Ability to explain technical aspects clearly'}
             ]
         }
-    }
+        
+    return jsonify(result), 200
+
+@api_bp.route('/evaluation-templates/<string:template_type>', methods=['PUT'])
+@jwt_required()
+@require_admin_role()
+def update_evaluation_template(template_type):
+    """Update an evaluation template and its criteria, optionally for a specific level"""
+    from app.models.models import EvaluationTemplate, EvaluationCriterion, EvaluationType, ProjectLevel
     
-    return jsonify(templates), 200
+    try:
+        data = request.json
+        eval_type = EvaluationType[template_type.upper()]
+        level_param = data.get('level')
+        level_enum = ProjectLevel(int(level_param)) if level_param else None
+        
+        # Find template for this type and level
+        template = EvaluationTemplate.query.filter_by(
+            evaluation_type=eval_type,
+            level=level_enum
+        ).first()
+        
+        if not template:
+            level_str = f" (Level {level_param})" if level_param else ""
+            template = EvaluationTemplate(
+                name=data.get('name', f"{template_type.capitalize()} Evaluation{level_str}"),
+                description=data.get('description', ''),
+                evaluation_type=eval_type,
+                level=level_enum
+            )
+            db.session.add(template)
+            db.session.flush()
+        else:
+            template.name = data.get('name', template.name)
+            template.description = data.get('description', template.description)
+            template.updated_at = datetime.utcnow()
+            
+        # Update criteria
+        if 'criteria' in data:
+            # Remove old criteria
+            EvaluationCriterion.query.filter_by(template_id=template.id).delete()
+            
+            # Add new criteria
+            for c_data in data['criteria']:
+                criterion = EvaluationCriterion(
+                    template_id=template.id,
+                    criterion_name=c_data['criterion_name'],
+                    max_score=float(c_data['max_score']),
+                    description=c_data.get('description', '')
+                )
+                db.session.add(criterion)
+        
+        db.session.commit()
+        return jsonify(template.to_dict()), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to update template", "details": str(e)}), 500
+
+@api_bp.route('/evaluation-templates/reset', methods=['POST'])
+@jwt_required()
+@require_admin_role()
+def reset_evaluation_templates():
+    """Reset templates to system defaults"""
+    from app.models.models import EvaluationTemplate, EvaluationCriterion, EvaluationType
+    
+    try:
+        # Clear existing criteria first (since bulk delete doesn't cascade)
+        EvaluationCriterion.query.delete()
+        # Clear existing templates
+        EvaluationTemplate.query.delete()
+        
+        # Default criteria
+        defaults = [
+            {
+                'name': 'Project Evaluation',
+                'type': EvaluationType.PROJECT,
+                'description': 'Evaluation of project work: Code Quality, Documentation, and Functionality',
+                'criteria': [
+                    {'name': 'Code Quality', 'score': 20, 'desc': 'Code structure, organization, and adherence to best practices'},
+                    {'name': 'Documentation', 'score': 20, 'desc': 'Completeness and clarity of documentation'},
+                    {'name': 'Functionality', 'score': 30, 'desc': 'How well the project meets functional requirements'}
+                ]
+            },
+            {
+                'name': 'Presentation Evaluation',
+                'type': EvaluationType.PRESENTATION,
+                'description': 'Evaluation of presentation: Clarity & Communication, Visual Presentation, and Technical Explanation',
+                'criteria': [
+                    {'name': 'Clarity & Communication', 'score': 10, 'desc': 'Clear communication of ideas and concepts'},
+                    {'name': 'Visual Presentation', 'score': 10, 'desc': 'Quality of visual materials and slides'},
+                    {'name': 'Technical Explanation', 'score': 10, 'desc': 'Ability to explain technical aspects clearly'}
+                ]
+            }
+        ]
+        
+        for d in defaults:
+            template = EvaluationTemplate(
+                name=d['name'],
+                description=d['description'],
+                evaluation_type=d['type']
+            )
+            db.session.add(template)
+            db.session.flush()
+            
+            for c in d['criteria']:
+                criterion = EvaluationCriterion(
+                    template_id=template.id,
+                    criterion_name=c['name'],
+                    max_score=c['score'],
+                    description=c['desc']
+                )
+                db.session.add(criterion)
+        
+        db.session.commit()
+        return jsonify({"message": "Templates reset to defaults successfully"}), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        print(f"Error resetting templates: {traceback.format_exc()}")
+        return jsonify({"error": "Failed to reset templates", "details": str(e)}), 500
 
 # Projects Routes
 @api_bp.route('/projects', methods=['GET'])
@@ -626,17 +802,23 @@ def get_projects():
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 50))
         
-        # Build query
-        query = Project.query
+        # Build query with joins for searching linked data
+        query = db.session.query(Project).join(Student, Project.student_id == Student.id).join(User, Student.user_id == User.id).join(StudyProgram, Project.study_program_id == StudyProgram.id)
         
         # Apply filters
         if search:
+            search_term = f"%{search}%"
             query = query.filter(
-                Project.title.contains(search) |
-                Project.description.contains(search)
+                db.or_(
+                    Project.title.ilike(search_term),
+                    Project.description.ilike(search_term),
+                    User.name.ilike(search_term),
+                    StudyProgram.name.ilike(search_term),
+                    StudyProgram.code.ilike(search_term)
+                )
             )
         
-        if status:
+        if status and status != 'all':
             try:
                 status_enum = ProjectStatus(status)
                 query = query.filter(Project.status == status_enum)
@@ -644,12 +826,16 @@ def get_projects():
                 # Fallback to string comparison for backward compatibility
                 query = query.filter(Project.status == status)
         
-        if level:
-            query = query.filter(Project.level == int(level))
+        if level and level != 'all':
+            try:
+                level_val = int(level)
+                query = query.filter(Project.level == ProjectLevel(level_val))
+            except (ValueError, KeyError):
+                pass
         
         # Prefer new study_program_id, fallback to legacy param
         selected_sp_id = study_program_id or legacy_course_id
-        if selected_sp_id:
+        if selected_sp_id and selected_sp_id != 'all':
             query = query.filter(Project.study_program_id == int(selected_sp_id))
         
         # Get paginated results
@@ -711,10 +897,15 @@ def create_my_project():
         if not current_user or not student:
             return jsonify({"error": "Access denied"}), 403
         
-        # Check if student already has a project (one-to-one relationship)
+        # Check if student already has a project
         existing_project = Project.query.filter_by(student_id=student.id).first()
         if existing_project:
-            return jsonify({"error": "You already have a project. Each student can only have one project."}), 400
+            # If the project is rejected, allow creating a new one by deleting the old one
+            if existing_project.status == ProjectStatus.REJECTED:
+                db.session.delete(existing_project)
+                db.session.flush() # Ensure it's deleted before creating new one
+            else:
+                return jsonify({"error": "You already have an active or pending project. Each student can only have one project."}), 400
         
         # Get request data
         data = request.json
@@ -928,23 +1119,21 @@ def reject_project(project_id):
             db.session.rollback()
             return jsonify({"error": f"Failed to reject project: {error}"}), 500
         
-        # Store rejection reason in description if provided (or could add a separate field)
+        # Store rejection reason
         if rejection_reason:
-            project.description = (project.description or '') + f"\n\n[Rejection Reason: {rejection_reason}]"
+            project.rejection_reason = rejection_reason
         
         # Create notification for student
         student_user = project.student.user if project.student else None
         if student_user:
             message = f"Your project '{project.title}' has been rejected."
-            if rejection_reason:
-                message += f" Reason: {rejection_reason}"
             create_notification(
                 user_id=student_user.id,
                 title="Project Rejected",
                 message=message,
                 notification_type="error",
-                action_label="View project",
-                action_url="/dashboard"  # Link to student dashboard
+                action_label="View reason",
+                action_url="/dashboard"  # Link to student dashboard which will show details
             )
         
         db.session.commit()
@@ -1008,6 +1197,8 @@ def create_evaluation(project_id):
     # Calculate scores based on evaluation type
     total_score = 0
     total_max_score = 0
+    
+    # Optional fields for backward compatibility with old report logic
     code_quality = None
     documentation_score = None
     functionality_score = None
@@ -1015,7 +1206,7 @@ def create_evaluation(project_id):
     visual_presentation = None
     technical_explanation = None
     
-    # Process marks and extract scores based on type
+    # Process marks and extract scores
     for mark_data in data['marks']:
         criterion_name = mark_data['criterion_name'].lower()
         score = float(mark_data['score'])
@@ -1024,36 +1215,21 @@ def create_evaluation(project_id):
         total_score += score
         total_max_score += max_score
         
-        # Map marks to specific fields based on evaluation type
+        # Best-effort mapping to old columns for backward compatibility
         if evaluation_type == EvaluationType.PROJECT:
-            if 'code quality' in criterion_name:
-                code_quality = score if code_quality is None else code_quality + score
-            elif 'documentation' in criterion_name:
-                documentation_score = score if documentation_score is None else documentation_score + score
-            elif 'functionality' in criterion_name:
-                functionality_score = score if functionality_score is None else functionality_score + score
+            if 'code' in criterion_name or 'quality' in criterion_name:
+                code_quality = (code_quality or 0) + score
+            elif 'doc' in criterion_name:
+                documentation_score = (documentation_score or 0) + score
+            elif 'func' in criterion_name:
+                functionality_score = (functionality_score or 0) + score
         elif evaluation_type == EvaluationType.PRESENTATION:
-            if 'clarity' in criterion_name or 'communication' in criterion_name:
-                clarity_communication = score if clarity_communication is None else clarity_communication + score
-            elif 'visual' in criterion_name or ('presentation' in criterion_name and 'visual' not in criterion_name):
-                visual_presentation = score if visual_presentation is None else visual_presentation + score
-            elif 'technical' in criterion_name or 'explanation' in criterion_name:
-                technical_explanation = score if technical_explanation is None else technical_explanation + score
-    
-    # Calculate totals
-    total_project_marks = 0
-    total_presentation_marks = 0
-    
-    if evaluation_type == EvaluationType.PROJECT:
-        total_project_marks = total_score
-        code_quality = code_quality or 0
-        documentation_score = documentation_score or 0
-        functionality_score = functionality_score or 0
-    elif evaluation_type == EvaluationType.PRESENTATION:
-        total_presentation_marks = total_score
-        clarity_communication = clarity_communication or 0
-        visual_presentation = visual_presentation or 0
-        technical_explanation = technical_explanation or 0
+            if 'clarity' in criterion_name or 'comm' in criterion_name:
+                clarity_communication = (clarity_communication or 0) + score
+            elif 'visual' in criterion_name or 'pres' in criterion_name:
+                visual_presentation = (visual_presentation or 0) + score
+            elif 'tech' in criterion_name or 'exp' in criterion_name:
+                technical_explanation = (technical_explanation or 0) + score
     
     # Calculate percentage
     percentage = round((total_score / total_max_score) * 100, 2) if total_max_score > 0 else 0.0
@@ -1070,8 +1246,8 @@ def create_evaluation(project_id):
         clarity_communication=clarity_communication,
         visual_presentation=visual_presentation,
         technical_explanation=technical_explanation,
-        total_project_marks=total_project_marks,
-        total_presentation_marks=total_presentation_marks,
+        total_project_marks=total_score if evaluation_type == EvaluationType.PROJECT else 0,
+        total_presentation_marks=total_score if evaluation_type == EvaluationType.PRESENTATION else 0,
         comments=data.get('comments')
     )
     db.session.add(evaluation)
@@ -1098,34 +1274,26 @@ def create_evaluation(project_id):
     
     if project_eval and presentation_eval:
         # Calculate actual total marks from the marks themselves
-        project_total = sum(mark.score for mark in project_eval.marks) if project_eval.marks.count() > 0 else (project_eval.total_project_marks or 0)
-        presentation_total = sum(mark.score for mark in presentation_eval.marks) if presentation_eval.marks.count() > 0 else (presentation_eval.total_presentation_marks or 0)
+        project_total = sum(mark.score for mark in project_eval.marks)
+        presentation_total = sum(mark.score for mark in presentation_eval.marks)
         
         # Calculate max possible marks
-        project_max = sum(mark.max_score for mark in project_eval.marks) if project_eval.marks.count() > 0 else 70
-        presentation_max = sum(mark.max_score for mark in presentation_eval.marks) if presentation_eval.marks.count() > 0 else 30
+        project_max = sum(mark.max_score for mark in project_eval.marks)
+        presentation_max = sum(mark.max_score for mark in presentation_eval.marks)
         
         total_marks = project_total + presentation_total
-        total_max_marks = project_max + presentation_max  # Should be 100 (70 + 30)
+        total_max_marks = project_max + presentation_max
         
-        # Calculate overall percentage correctly
+        # Calculate overall percentage
         overall_percentage = round((total_marks / total_max_marks) * 100, 2) if total_max_marks > 0 else 0
-        calculated_overall_percentage = overall_percentage  # Store for notification
-        
-        # Update total_project_marks and total_presentation_marks for consistency
-        project_eval.total_project_marks = project_total
-        presentation_eval.total_presentation_marks = presentation_total
+        calculated_overall_percentage = overall_percentage
         
         # Determine grade
         grade = 'F'
-        if overall_percentage >= 90:
-            grade = 'A'
-        elif overall_percentage >= 80:
-            grade = 'B'
-        elif overall_percentage >= 70:
-            grade = 'C'
-        elif overall_percentage >= 60:
-            grade = 'D'
+        if overall_percentage >= 80: grade = '1'
+        elif overall_percentage >= 70: grade = '2.1'
+        elif overall_percentage >= 60: grade = '2.2'
+        elif overall_percentage >= 50: grade = '3'
         
         # Update both evaluations with overall percentage and grade
         project_eval.overall_percentage = overall_percentage
@@ -1133,67 +1301,114 @@ def create_evaluation(project_id):
         presentation_eval.overall_percentage = overall_percentage
         presentation_eval.grade = grade
         
-        # Automatic status transition: both evaluations exist -> EVALUATED
+        # Transition to EVALUATED
         success, error = update_project_status(project, ProjectStatus.EVALUATED)
-        if not success:
-            # Log error but don't fail the request
-            print(f"Warning: Could not update project status: {error}")
     else:
         # First evaluation created -> transition to UNDER_REVIEW
         if project.status == ProjectStatus.SUBMITTED:
             success, error = update_project_status(project, ProjectStatus.UNDER_REVIEW)
-            if not success:
-                print(f"Warning: Could not update project status: {error}")
     
     db.session.commit()
     
-    # Create notification for student when evaluation is created
-    try:
-        # Refresh project to ensure relationships are loaded
-        db.session.refresh(project)
-        # Access student relationship
-        student = project.student
-        if student:
-            # Access user relationship from student
-            student_user = student.user
-            if student_user:
-                # Use the calculated overall_percentage if both evaluations exist
-                if calculated_overall_percentage is not None:
-                    # Both evaluations exist, use overall percentage
-                    score_str = f"{calculated_overall_percentage}%"
-                    notification = create_notification(
-                        user_id=student_user.id,
-                        title="Evaluation Released",
-                        message=f"Your project '{project.title}' has been evaluated. Overall Score: {score_str}",
-                        notification_type="success",
-                        action_label="View evaluation",
-                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
-                    )
-                else:
-                    # Only one evaluation exists, use individual percentage
-                    eval_type_str = evaluation_type.value.lower()
-                    score_str = f"{percentage}%"
-                    notification = create_notification(
-                        user_id=student_user.id,
-                        title="Evaluation Released",
-                        message=f"Your project '{project.title}' has been evaluated ({eval_type_str}). Score: {score_str}",
-                        notification_type="success",
-                        action_label="View evaluation",
-                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
-                    )
-                if not notification:
-                    print(f"Warning: Failed to create notification for student {student_user.id} for evaluation {evaluation.id}")
-            else:
-                print(f"Warning: Student {student.id} has no associated user for project {project_id}")
-        else:
-            print(f"Warning: Project {project_id} has no associated student")
-    except Exception as e:
-        # Log error but don't fail the request
-        print(f"Error creating notification for evaluation {evaluation.id}: {str(e)}")
-        import traceback
-        traceback.print_exc()
-    
     return jsonify(evaluation.to_dict()), 201
+
+@api_bp.route('/projects/<int:project_id>/release-scores', methods=['POST'])
+@jwt_required()
+@require_admin_role()
+def release_scores(project_id):
+    """Admin endpoint to release evaluation scores to the student"""
+    project = Project.query.get_or_404(project_id)
+    
+    # Check if both evaluations exist
+    evaluations = Evaluation.query.filter_by(project_id=project_id).all()
+    project_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
+    presentation_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
+    
+    if not project_eval or not presentation_eval:
+        return jsonify({"error": "Both Project and Presentation evaluations must be completed before releasing scores."}), 400
+    
+    if project.scores_released:
+        return jsonify({"message": "Scores have already been released for this project."}), 200
+    
+    try:
+        project.scores_released = True
+        db.session.commit()
+        
+        # Create notification for student
+        student = project.student
+        if student and student.user:
+            score_str = f"{project_eval.overall_percentage}%"
+            create_notification(
+                user_id=student.user.id,
+                title="Evaluation Results Released",
+                message=f"Evaluation results for your project '{project.title}' have been released. Overall Score: {score_str}, Grade: {project_eval.grade}",
+                notification_type="success",
+                action_label="View results",
+                action_url="/dashboard#evaluation"
+            )
+        
+        return jsonify({
+            "message": "Scores released to student successfully.",
+            "project": project.to_dict()
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"Failed to release scores: {str(e)}"}), 500
+
+@api_bp.route('/projects/bulk-release-scores', methods=['POST'])
+@jwt_required()
+@require_admin_role()
+def bulk_release_scores():
+    """Admin endpoint to release scores for a group of projects based on level and study program"""
+    try:
+        data = request.json or {}
+        level_param = data.get('level')
+        study_program_id = data.get('study_program_id')
+        
+        # Build query for eligible projects
+        query = Project.query.filter_by(scores_released=False)
+        
+        if level_param and level_param != 'all':
+            query = query.filter(Project.level == ProjectLevel(int(level_param)))
+            
+        if study_program_id and study_program_id != 'all':
+            query = query.filter(Project.study_program_id == int(study_program_id))
+            
+        projects = query.all()
+        released_count = 0
+        
+        for project in projects:
+            # Check if both evaluations exist
+            evaluations = Evaluation.query.filter_by(project_id=project.id).all()
+            project_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
+            presentation_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
+            
+            if project_eval and presentation_eval:
+                project.scores_released = True
+                released_count += 1
+                
+                # Create notification for student
+                student = project.student
+                if student and student.user:
+                    create_notification(
+                        user_id=student.user.id,
+                        title="Evaluation Results Released",
+                        message=f"Evaluation results for your project '{project.title}' have been released. Overall Score: {project_eval.overall_percentage}%, Grade: {project_eval.grade}",
+                        notification_type="success",
+                        action_label="View results",
+                        action_url="/dashboard#evaluation"
+                    )
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": f"Successfully released scores for {released_count} projects.",
+            "count": released_count
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"Failed to release scores: {str(e)}"}), 500
 
 @api_bp.route('/evaluations/<int:evaluation_id>', methods=['PATCH'])
 @jwt_required()
@@ -1265,14 +1480,14 @@ def update_evaluation(evaluation_id):
         
         # Determine grade
         grade = 'F'
-        if overall_percentage >= 90:
-            grade = 'A'
-        elif overall_percentage >= 80:
-            grade = 'B'
+        if overall_percentage >= 80:
+            grade = '1'
         elif overall_percentage >= 70:
-            grade = 'C'
+            grade = '2.1'
         elif overall_percentage >= 60:
-            grade = 'D'
+            grade = '2.2'
+        elif overall_percentage >= 50:
+            grade = '3'
         
         # Update both evaluations with overall percentage and grade
         project_eval.overall_percentage = overall_percentage
@@ -1287,54 +1502,48 @@ def update_evaluation(evaluation_id):
     # Refresh evaluation object to ensure we have the latest data
     db.session.refresh(evaluation)
     
-    # Create notification for student when evaluation is updated
-    try:
-        # Refresh project to ensure relationships are loaded
-        project = evaluation.project
-        db.session.refresh(project)
-        # Access student relationship
-        student = project.student
-        if student:
-            # Access user relationship from student
-            student_user = student.user
-            if student_user:
-                # Use the calculated overall_percentage if both evaluations exist
-                if calculated_overall_percentage is not None:
-                    # Both evaluations exist, use overall percentage
-                    score_str = f"{calculated_overall_percentage}%"
-                    notification = create_notification(
-                        user_id=student_user.id,
-                        title="Evaluation Updated",
-                        message=f"Your project '{project.title}' evaluation has been updated. Overall Score: {score_str}",
-                        notification_type="info",
-                        action_label="View evaluation",
-                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
-                    )
-                else:
-                    # Only one evaluation exists, use individual percentage
-                    eval_type_str = evaluation.evaluation_type.value.lower()
-                    score_str = f"{evaluation.total_score}%"
-                    notification = create_notification(
-                        user_id=student_user.id,
-                        title="Evaluation Updated",
-                        message=f"Your project '{project.title}' evaluation ({eval_type_str}) has been updated. Score: {score_str}",
-                        notification_type="info",
-                        action_label="View evaluation",
-                        action_url="/dashboard#evaluation"  # Link to student dashboard evaluation section
-                    )
-                if not notification:
-                    print(f"Warning: Failed to create notification for student {student_user.id} for evaluation {evaluation.id}")
-            else:
-                print(f"Warning: Student {student.id} has no associated user for project {project.id}")
-        else:
-            print(f"Warning: Project {project.id} has no associated student")
-    except Exception as e:
-        # Log error but don't fail the request
-        print(f"Error creating notification for evaluation update {evaluation.id}: {str(e)}")
-        import traceback
-        traceback.print_exc()
-    
     return jsonify(evaluation.to_dict()), 200
+
+@api_bp.route('/evaluations/<int:evaluation_id>', methods=['DELETE'])
+@jwt_required()
+@require_admin_role()
+def delete_evaluation(evaluation_id):
+    """Delete an evaluation and revert project status if necessary"""
+    try:
+        evaluation = Evaluation.query.get_or_404(evaluation_id)
+        project = evaluation.project
+        
+        # Store info for logic after deletion
+        project_id = project.id
+        
+        # Delete evaluation (marks will be deleted via cascade)
+        db.session.delete(evaluation)
+        db.session.flush() # Sync with DB but don't commit yet
+        
+        # Update project status and overall scores
+        remaining_evals = Evaluation.query.filter_by(project_id=project_id).all()
+        
+        if not remaining_evals:
+            # No evaluations left -> Revert to SUBMITTED
+            # Using private update to bypass transition validation if necessary, 
+            # but we'll try standard first
+            project.status = ProjectStatus.SUBMITTED
+        else:
+            # One evaluation left -> Revert to UNDER_REVIEW
+            project.status = ProjectStatus.UNDER_REVIEW
+            # Clear overall percentage and grade since we don't have both evals anymore
+            for e in remaining_evals:
+                e.overall_percentage = None
+                e.grade = None
+        
+        db.session.commit()
+        return jsonify({"message": "Evaluation deleted successfully"}), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        print(f"Error deleting evaluation: {traceback.format_exc()}")
+        return jsonify({"error": "Failed to delete evaluation", "details": str(e)}), 500
 
 # User Management Routes (Admin Only)
 @api_bp.route('/users', methods=['GET'])
@@ -1648,28 +1857,41 @@ def get_performance_by_course():
     # Get level from query parameter
     level_param = request.args.get('level')
     
-    query = db.session.query(
-        StudyProgram.name,
-        Project.level,
-        func.avg(Evaluation.total_score).label('avg_score'),
-        func.count(Evaluation.id).label('evaluation_count')
-    ).select_from(StudyProgram).join(Project, StudyProgram.id == Project.study_program_id).join(
-        Evaluation, Project.id == Evaluation.project_id
-    )
-    
-    # Filter by level if provided
     if level_param:
         level = ProjectLevel(int(level_param))
-        query = query.filter(Project.level == level)
-    
-    results = query.group_by(StudyProgram.id, Project.level).all()
-    
-    return jsonify([{
-        'study_program_name': result.name,
-        'level': result.level.value if isinstance(result.level, ProjectLevel) else result.level,
-        'average_score': round(result.avg_score, 2),
-        'evaluation_count': result.evaluation_count
-    } for result in results]), 200
+        query = db.session.query(
+            StudyProgram.name,
+            Project.level,
+            func.avg(Evaluation.total_score).label('avg_score'),
+            func.count(Evaluation.id).label('evaluation_count')
+        ).select_from(StudyProgram).join(Project, StudyProgram.id == Project.study_program_id).join(
+            Evaluation, Project.id == Evaluation.project_id
+        ).filter(Project.level == level).group_by(StudyProgram.id, Project.level)
+        
+        results = query.all()
+        return jsonify([{
+            'study_program_name': result.name,
+            'level': result.level.value if isinstance(result.level, ProjectLevel) else result.level,
+            'average_score': round(result.avg_score, 2),
+            'evaluation_count': result.evaluation_count
+        } for result in results]), 200
+    else:
+        # Aggregate across all levels
+        query = db.session.query(
+            StudyProgram.name,
+            func.avg(Evaluation.total_score).label('avg_score'),
+            func.count(Evaluation.id).label('evaluation_count')
+        ).select_from(StudyProgram).join(Project, StudyProgram.id == Project.study_program_id).join(
+            Evaluation, Project.id == Evaluation.project_id
+        ).group_by(StudyProgram.id)
+        
+        results = query.all()
+        return jsonify([{
+            'study_program_name': result.name,
+            'level': None, # No specific level
+            'average_score': round(result.avg_score, 2),
+            'evaluation_count': result.evaluation_count
+        } for result in results]), 200
 
 @api_bp.route('/analytics/pipeline', methods=['GET'])
 @jwt_required()
@@ -1836,11 +2058,21 @@ def create_deadline():
         data = request.json
         level = ProjectLevel(data['level'])
         
+        # Parse deadline string - handle both ISO and datetime-local formats
+        deadline_str = data['deadline']
+        try:
+            if 'T' in deadline_str and len(deadline_str) == 16: # datetime-local format: YYYY-MM-DDTHH:MM
+                deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%dT%H:%M')
+            else:
+                deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+        except ValueError:
+            deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+
         # Check if deadline already exists for this level
         existing = Deadline.query.filter_by(level=level).first()
         if existing:
             # Update existing deadline
-            existing.deadline = datetime.fromisoformat(data['deadline'].replace('Z', '+00:00'))
+            existing.deadline = deadline_dt
             existing.updated_at = datetime.utcnow()
             db.session.commit()
             return jsonify(existing.to_dict()), 200
@@ -1848,14 +2080,14 @@ def create_deadline():
         # Create new deadline
         deadline = Deadline(
             level=level,
-            deadline=datetime.fromisoformat(data['deadline'].replace('Z', '+00:00'))
+            deadline=deadline_dt
         )
         db.session.add(deadline)
         db.session.commit()
         return jsonify(deadline.to_dict()), 201
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to create deadline"}), 500
+        return jsonify({"error": "Failed to create deadline", "details": str(e)}), 500
 
 @api_bp.route('/deadlines/<int:deadline_id>', methods=['PUT'])
 def update_deadline(deadline_id):
@@ -1863,14 +2095,23 @@ def update_deadline(deadline_id):
         deadline = Deadline.query.get_or_404(deadline_id)
         data = request.json
         
-        deadline.deadline = datetime.fromisoformat(data['deadline'].replace('Z', '+00:00'))
+        deadline_str = data['deadline']
+        try:
+            if 'T' in deadline_str and len(deadline_str) == 16:
+                deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%dT%H:%M')
+            else:
+                deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+        except ValueError:
+            deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+
+        deadline.deadline = deadline_dt
         deadline.updated_at = datetime.utcnow()
         db.session.commit()
         
         return jsonify(deadline.to_dict()), 200
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Failed to update deadline"}), 500
+        return jsonify({"error": "Failed to update deadline", "details": str(e)}), 500
 
 @api_bp.route('/deadlines/missed', methods=['GET'])
 @jwt_required()
@@ -2673,6 +2914,7 @@ def get_my_dashboard():
                 "status": project.status.value if isinstance(project.status, ProjectStatus) else project.status,
                 "level": project.level.value,
                 "submitted_at": project.submitted_at.isoformat() if project.submitted_at else None,
+                "rejection_reason": project.rejection_reason,
                 "status_timeline": timeline,
                 "has_evaluation": has_evaluation,
                 "total_score": total_score
@@ -2723,8 +2965,10 @@ def get_my_project(project_id):
         if error:
             return jsonify({"error": error}), 404
         
-        # Get evaluation details
-        evaluation_details = get_project_evaluation_details(project)
+        # Get evaluation details only if scores are released
+        evaluation_details = None
+        if project.scores_released:
+            evaluation_details = get_project_evaluation_details(project)
         
         # Get timeline
         timeline = calculate_status_timeline(project)
@@ -2739,6 +2983,7 @@ def get_my_project(project_id):
             "description": project.description,
             "level": project.level.value,
             "status": project.status.value if isinstance(project.status, ProjectStatus) else project.status,
+            "rejection_reason": project.rejection_reason,
             "study_program": {
                 "id": study_program.id if study_program else None,
                 "code": study_program.code if study_program else None,

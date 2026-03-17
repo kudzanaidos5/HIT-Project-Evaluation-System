@@ -70,9 +70,9 @@ export default function DeadlinesPage() {
   // Create/update deadline mutation
   const saveDeadlineMutation = useMutation({
     mutationFn: async ({ level, deadline }: { level: number; deadline: string }) => {
-      // Convert local datetime to ISO string
-      const isoString = new Date(deadline).toISOString()
-      return analyticsAPI.createDeadline({ level, deadline: isoString })
+      // Send the local datetime string directly
+      // The backend will handle parsing it
+      return analyticsAPI.createDeadline({ level, deadline })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deadlines'] })

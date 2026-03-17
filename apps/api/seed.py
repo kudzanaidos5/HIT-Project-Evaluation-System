@@ -38,19 +38,22 @@ def seed_database():
         
         # Create sample students
         students_data = [
-            {'name': 'John Doe', 'email': 'john.doe@hit.ac.zw', 'student_id': 'H230001A'},
-            {'name': 'Jane Smith', 'email': 'jane.smith@hit.ac.zw', 'student_id': 'H230002B'},
-            {'name': 'Mike Johnson', 'email': 'mike.johnson@hit.ac.zw', 'student_id': 'H230003C'},
-            {'name': 'Sarah Wilson', 'email': 'sarah.wilson@hit.ac.zw', 'student_id': 'H230004D'},
-            {'name': 'David Brown', 'email': 'david.brown@hit.ac.zw', 'student_id': 'H230005E'},
+            {'name': 'John Doe', 'student_id': 'H230001A'},
+            {'name': 'Jane Smith', 'student_id': 'H230002B'},
+            {'name': 'Mike Johnson', 'student_id': 'H230003C'},
+            {'name': 'Sarah Wilson', 'student_id': 'H230004D'},
+            {'name': 'David Brown', 'student_id': 'H230005E'},
         ]
         
         for student_data in students_data:
-            user = User.query.filter_by(email=student_data['email']).first()
+            # Format email as registration_number@hit.ac.zw
+            email = f"{student_data['student_id'].lower()}@hit.ac.zw"
+            
+            user = User.query.filter_by(email=email).first()
             if not user:
                 user = User(
                     name=student_data['name'],
-                    email=student_data['email'],
+                    email=email,
                     role=UserRole.STUDENT
                 )
                 user.set_password('Student123!')
@@ -64,54 +67,30 @@ def seed_database():
                 )
                 db.session.add(student_profile)
         
-        # Create study programs
+        # Create unique study programs
         study_programs_data = [
             {
-                'code': 'CS200',
+                'code': 'CS',
                 'name': 'Computer Science',
-                'description': None,  # "No description" in the image
+                'description': 'Department of Computer Science',
                 'created_at': datetime(2025, 11, 17)
             },
             {
-                'code': 'CS400',
-                'name': 'Computer Science',
-                'description': 'Level400',
-                'created_at': datetime(2025, 11, 17)
-            },
-            {
-                'code': 'IT200',
+                'code': 'IT',
                 'name': 'Information and Technology',
-                'description': 'Level 200',
+                'description': 'Department of Information Technology',
                 'created_at': datetime(2025, 11, 17)
             },
             {
-                'code': 'IT400',
-                'name': 'Information and Technology',
-                'description': 'Level 400',
-                'created_at': datetime(2025, 11, 17)
-            },
-            {
-                'code': 'SE200',
+                'code': 'SWE',
                 'name': 'Software Engineering',
-                'description': 'Level 200',
+                'description': 'Department of Software Engineering',
                 'created_at': datetime(2025, 11, 17)
             },
             {
-                'code': 'SE400',
-                'name': 'Software Engineering',
-                'description': 'level 400',
-                'created_at': datetime(2025, 11, 25)
-            },
-            {
-                'code': 'ISA200',
+                'code': 'ISA',
                 'name': 'Information Security and Assurance',
-                'description': 'Level 200',
-                'created_at': datetime(2025, 11, 29)
-            },
-            {
-                'code': 'ISA400',
-                'name': 'Information Security and Assurance',
-                'description': 'Level 400',
+                'description': 'Department of Information Security and Assurance',
                 'created_at': datetime(2025, 11, 29)
             },
         ]
@@ -134,53 +113,57 @@ def seed_database():
                 'title': 'IoT Smart Campus System',
                 'description': 'A comprehensive IoT solution for campus management',
                 'level': ProjectLevel.LEVEL_400,
-                'course_code': 'CS400',
-                'student_email': 'john.doe@hit.ac.zw'
+                'course_code': 'CS',
+                'student_reg': 'H230001A'
             },
             {
                 'title': 'Mobile Banking Application',
                 'description': 'Secure mobile banking app with biometric authentication',
                 'level': ProjectLevel.LEVEL_200,
-                'course_code': 'CS200',
-                'student_email': 'jane.smith@hit.ac.zw'
+                'course_code': 'CS',
+                'student_reg': 'H230002B'
             },
             {
                 'title': 'E-Learning Platform',
                 'description': 'Online learning management system',
                 'level': ProjectLevel.LEVEL_400,
-                'course_code': 'IT400',
-                'student_email': 'mike.johnson@hit.ac.zw'
+                'course_code': 'IT',
+                'student_reg': 'H230003C'
             },
             {
                 'title': 'Inventory Management System',
                 'description': 'Database-driven inventory tracking system',
                 'level': ProjectLevel.LEVEL_200,
-                'course_code': 'IT200',
-                'student_email': 'sarah.wilson@hit.ac.zw'
+                'course_code': 'IT',
+                'student_reg': 'H230004D'
             },
             {
                 'title': 'Network Security Scanner',
                 'description': 'Automated network vulnerability assessment tool',
                 'level': ProjectLevel.LEVEL_400,
-                'course_code': 'ISA400',
-                'student_email': 'david.brown@hit.ac.zw'
+                'course_code': 'ISA',
+                'student_reg': 'H230005E'
             },
         ]
         
         for project_data in projects_data:
             study_program = StudyProgram.query.filter_by(code=project_data['course_code']).first()
-            student_user = User.query.filter_by(email=project_data['student_email']).first()
+            email = f"{project_data['student_reg'].lower()}@hit.ac.zw"
+            student_user = User.query.filter_by(email=email).first()
             
             if study_program and student_user and student_user.student_profile:
-                project = Project(
-                    title=project_data['title'],
-                    description=project_data['description'],
-                    level=project_data['level'],
-                    study_program_id=study_program.id,
-                    student_id=student_user.student_profile.id,
-                    status=ProjectStatus.PENDING_APPROVAL
-                )
-                db.session.add(project)
+                # Check if student already has a project
+                existing_project = Project.query.filter_by(student_id=student_user.student_profile.id).first()
+                if not existing_project:
+                    project = Project(
+                        title=project_data['title'],
+                        description=project_data['description'],
+                        level=project_data['level'],
+                        study_program_id=study_program.id,
+                        student_id=student_user.student_profile.id,
+                        status=ProjectStatus.PENDING_APPROVAL
+                    )
+                    db.session.add(project)
         
         # Create initial deadlines
         deadline_200 = Deadline.query.filter_by(level=ProjectLevel.LEVEL_200).first()
@@ -203,10 +186,12 @@ def seed_database():
         
         print("✅ Database seeded successfully!")
         print("📧 Admin login: admin@hit.ac.zw / Admin123!")
-        print("👥 Student logins: [student_email] / Student123!")
+        print("👥 Student logins: [registration_number]@hit.ac.zw / Student123!")
         print("📚 Created study programs:", len(study_programs_data))
         print("🎓 Created students:", len(students_data))
-        print("📋 Created projects:", len(projects_data))
+        # Recalculate count since we skip duplicates
+        actual_projects = Project.query.count()
+        print("📋 Total projects:", actual_projects)
         print("⏰ Created deadlines for Level 200 and 400")
 
 if __name__ == '__main__':

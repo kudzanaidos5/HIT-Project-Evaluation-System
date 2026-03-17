@@ -53,6 +53,7 @@ export default function StudentDashboard() {
   const [activeSection, setActiveSection] = useState<StudentSection['id']>('dashboard')
   const [verificationOpen, setVerificationOpen] = useState(false)
   const [studentAction, setStudentAction] = useState<'UPDATE_SUBMISSION' | 'CREATE_PROJECT' | null>(null)
+  const [showRejectionModal, setShowRejectionModal] = useState(false)
   const [actionProcessing, setActionProcessing] = useState(false)
   const actionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -93,7 +94,16 @@ export default function StudentDashboard() {
     }
     
     window.addEventListener('dashboard-refresh', handleRefresh)
-    return () => window.removeEventListener('dashboard-refresh', handleRefresh)
+    
+    const handleOpenRejection = () => {
+      setShowRejectionModal(true)
+    }
+    window.addEventListener('open-rejection-modal', handleOpenRejection)
+
+    return () => {
+      window.removeEventListener('dashboard-refresh', handleRefresh)
+      window.removeEventListener('open-rejection-modal', handleOpenRejection)
+    }
   }, [queryClient, project?.id])
 
   // Refetch evaluation data when evaluation section becomes active and set up polling
@@ -136,7 +146,7 @@ export default function StudentDashboard() {
         audience: 'STUDENT',
         userId: user?.id,
         persistent: false,
-        autoRemoveDelay: 2000,
+        autoRemoveDelay: 4000,
       })
     }
   }
@@ -158,7 +168,17 @@ export default function StudentDashboard() {
   const updateSubmissionMutation = useUpdateProjectSubmission()
   const createProjectMutation = useCreateMyProject()
   const { data: studyProgramsData } = useStudyPrograms()
-  const studyPrograms = studyProgramsData || []
+  const studyPrograms = React.useMemo(() => {
+    if (!studyProgramsData) return []
+    // Filter to ensure unique names (handling legacy data with duplicate names)
+    const seen = new Set()
+    return studyProgramsData.filter((sp: any) => {
+      const name = sp.name?.trim()
+      if (!name || seen.has(name)) return false
+      seen.add(name)
+      return true
+    })
+  }, [studyProgramsData])
 
   // Form state for submission
   const [githubLink, setGithubLink] = useState('')
@@ -278,7 +298,6 @@ export default function StudentDashboard() {
         title: 'Validation Error',
         userId: user?.id,
       })
-      setActionProcessing(false)
       setVerificationOpen(false)
       setStudentAction(null)
       return
@@ -291,7 +310,6 @@ export default function StudentDashboard() {
         title: 'Validation Error',
         userId: user?.id,
       })
-      setActionProcessing(false)
       setVerificationOpen(false)
       setStudentAction(null)
       return
@@ -300,6 +318,7 @@ export default function StudentDashboard() {
     setActionProcessing(true)
     
     try {
+      console.log('Initiating project creation mutation...')
       await createProjectMutation.mutateAsync({
         title: projectTitle.trim(),
         description: projectDescription.trim(),
@@ -307,6 +326,7 @@ export default function StudentDashboard() {
         level: selectedLevel as 200 | 400
       })
       
+      console.log('Project creation successful, updating UI state...')
       addNotification('Project created successfully! It is now pending admin approval.', 'success', {
         title: 'Project Created',
         audience: 'STUDENT',
@@ -315,6 +335,7 @@ export default function StudentDashboard() {
         actionUrl: '/dashboard',
       })
       
+      // Close all modals and reset form
       setVerificationOpen(false)
       setStudentAction(null)
       setShowCreateForm(false)
@@ -322,7 +343,9 @@ export default function StudentDashboard() {
       setProjectDescription('')
       setSelectedStudyProgram('')
       setSelectedLevel('')
+      
     } catch (error: any) {
+      console.error('Project creation failed:', error)
       // Extract error message from various possible error formats
       let errorMessage = 'Failed to create project'
       if (error?.response?.data?.error) {
@@ -331,15 +354,13 @@ export default function StudentDashboard() {
         errorMessage = error.response.data.message
       } else if (error?.message) {
         errorMessage = error.message
-      } else if (typeof error === 'string') {
-        errorMessage = error
       }
       
       addNotification(`Error: ${errorMessage}`, 'error', {
         title: 'Creation Failed',
         userId: user?.id,
       })
-      // Keep modal open on error so user can see the error and try again
+      // Keep modal open on error so user can see it
     } finally {
       setActionProcessing(false)
     }
@@ -500,17 +521,28 @@ export default function StudentDashboard() {
               {project.status === 'rejected' && (
                 <div className="pt-2 border-t border-red-200 dark:border-red-800">
                   <p className="text-xs text-red-700 dark:text-red-300 mb-3">
-                    Your project has been rejected. You can create a new project to start over.
+                    Your project has been rejected. You can view the reason or create a new project to start over.
                   </p>
-                  <button
-                    onClick={() => setShowCreateForm(true)}
-                    className="w-full inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
-                  >
-                    <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                    Create New Project
-                  </button>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <button
+                      onClick={() => setShowRejectionModal(true)}
+                      className="flex-1 inline-flex items-center justify-center px-4 py-2 border border-red-300 dark:border-red-700 text-sm font-medium rounded-md text-red-700 dark:text-red-300 bg-white dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                    >
+                      <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      View Rejection Reason
+                    </button>
+                    <button
+                      onClick={() => setShowCreateForm(true)}
+                      className="flex-1 inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                    >
+                      <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      Create New Project
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -633,7 +665,7 @@ export default function StudentDashboard() {
                           <option value="">Select study program</option>
                           {studyPrograms.map((sp: any) => (
                             <option key={sp.id} value={sp.id}>
-                              {sp.code} - {sp.name}
+                              {sp.name}
                             </option>
                           ))}
                         </select>
@@ -1214,15 +1246,61 @@ export default function StudentDashboard() {
         cancelLabel="Cancel"
         tone="info"
         loading={actionProcessing || createProjectMutation.isPending}
-        onConfirm={() => {
-          // Ensure handler is called
-          handleVerificationConfirm().catch((err) => {
-            console.error('Error in verification confirm:', err)
-            addNotification('An unexpected error occurred', 'error', { title: 'Error', userId: user?.id })
-          })
-        }}
+        onConfirm={handleVerificationConfirm}
         onCancel={handleVerificationCancel}
       />
+
+      {/* Rejection Reason Modal */}
+      {showRejectionModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+          <div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div 
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" 
+              aria-hidden="true"
+              onClick={() => setShowRejectionModal(false)}
+            ></div>
+
+            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+            <div className="inline-block align-bottom bg-white dark:bg-gray-900 rounded-2xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full border border-gray-200 dark:border-gray-800">
+              <div className="bg-white dark:bg-gray-900 px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div className="sm:flex sm:items-start">
+                  <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 dark:bg-red-900/40 sm:mx-0 sm:h-10 sm:w-10">
+                    <svg className="h-6 w-6 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                  <div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                    <h3 className="text-lg leading-6 font-bold text-gray-900 dark:text-white" id="modal-title">
+                      Project Rejection Details
+                    </h3>
+                    <div className="mt-4">
+                      <p className="text-sm text-gray-500 dark:text-gray-400 font-medium mb-1 uppercase tracking-wider">Reason for Rejection:</p>
+                      <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700">
+                        <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                          {project?.rejection_reason || 'No specific reason was provided by the administrator.'}
+                        </p>
+                      </div>
+                      <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">
+                        Please address these concerns and create a new project submission when ready.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-gray-50 dark:bg-gray-800/50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <button
+                  type="button"
+                  className="w-full inline-flex justify-center rounded-full border border-transparent shadow-sm px-6 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm"
+                  onClick={() => setShowRejectionModal(false)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

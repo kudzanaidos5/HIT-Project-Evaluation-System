@@ -68,6 +68,7 @@ export interface UIState {
   ) => void
   markNotificationRead: (id: string) => void
   markAllNotificationsRead: () => void
+  removeAllReadNotifications: () => void
   removeNotification: (id: string) => void
   clearAllNotificationTimeouts: () => void
   fetchNotifications: () => Promise<void>
@@ -267,11 +268,11 @@ export const useUIStore = create<UIState>((set, get) => ({
       notifications: [...state.notifications, notification],
     }))
 
-    // Only auto-remove if notification is not persistent
+    // Automatically mark as read after the delay if not persistent
     if (!notification.persistent) {
-      const delay = options?.autoRemoveDelay ?? 5000
+      const delay = options?.autoRemoveDelay ?? 8000
       const timeoutId = setTimeout(() => {
-        get().removeNotification(notification.id)
+        get().markNotificationRead(notification.id)
       }, delay)
 
       // Store timeout ID for cleanup
@@ -318,6 +319,23 @@ export const useUIStore = create<UIState>((set, get) => ({
         read: true,
       })),
     }))
+  },
+
+  removeAllReadNotifications: () => {
+    set((state) => {
+      const readIds = state.notifications.filter(n => n.read).map(n => n.id)
+      const newTimeouts = new Map(state.notificationTimeouts)
+      readIds.forEach(id => {
+        const timeout = newTimeouts.get(id)
+        if (timeout) clearTimeout(timeout)
+        newTimeouts.delete(id)
+      })
+      
+      return {
+        notifications: state.notifications.filter((notification) => !notification.read),
+        notificationTimeouts: newTimeouts
+      }
+    })
   },
 
   clearAllNotificationTimeouts: () => {

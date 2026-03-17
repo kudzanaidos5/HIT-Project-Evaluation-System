@@ -371,16 +371,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient()
   const { user, isAuthenticated, logout, checkAuth } = useAuthStore()
   const {
-    sidebarExpanded,
-    settingsMenuOpen,
-    toggleSidebar,
-    toggleSettingsMenu,
-    notifications,
-    setNotifications,
-    markNotificationRead,
-    markAllNotificationsRead,
-    fetchNotifications,
-    syncNotifications,
+  sidebarExpanded,
+  settingsMenuOpen,
+  toggleSidebar,
+  toggleSettingsMenu,
+  notifications,
+  setNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  removeAllReadNotifications,
+  removeNotification,
+  fetchNotifications,
+  syncNotifications,
   } = useUIStore()
   const { isDarkMode, toggleDarkMode } = useThemeStore()
   const isAdmin = user?.role === 'ADMIN'
@@ -527,6 +529,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
     }
     
+    // Handle project rejection notifications
+    if (notification.title?.includes('Rejected') || (notification.actionLabel === 'View reason' && notification.actionUrl === '/dashboard')) {
+      // Small delay to ensure navigation completes first
+      setTimeout(() => {
+        window.dispatchEvent(new Event('open-rejection-modal'))
+      }, 500)
+    }
+    
     if (notification.actionUrl) {
       router.push(notification.actionUrl)
     }
@@ -551,7 +561,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         markNotificationRead(notification.id)
       }
     })
-    setNotificationsOpen(false)
+    // Do not close dropdown after marking all as read
   }
 
   const scopedNotifications = useMemo(() => {
@@ -662,6 +672,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     notifications={scopedNotifications}
                     onSelect={handleNotificationSelect}
                     onMarkAllRead={handleMarkVisibleNotificationsRead}
+                    onRemove={removeNotification}
+                    onClearRead={removeAllReadNotifications}
                   />
                 )}
               </div>
@@ -855,6 +867,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                       }`}
                     >
                       Grade Classification
+                    </Link>
+                    <Link 
+                      href="/evaluation-templates" 
+                      className={`block px-3 py-1.5 text-sm rounded-md transition-all ${
+                        pathname === '/evaluation-templates'
+                          ? 'bg-blue-600/20 text-blue-700 dark:text-blue-400 font-medium'
+                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      Evaluation Criteria
                     </Link>
                   </div>
                 )}
