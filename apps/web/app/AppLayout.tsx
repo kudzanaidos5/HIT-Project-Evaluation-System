@@ -566,17 +566,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const scopedNotifications = useMemo(() => {
     if (!user?.role) return []
-    return notifications.filter((notification) => {
-      // If notification has a specific userId, only show it to that user
-      if (notification.userId !== undefined) {
-        return notification.userId === user.id
-      }
-      
-      // Otherwise, filter by audience/role
-      const audience = notification.audience || 'ALL'
-      if (audience === 'ALL') return true
-      return audience === user.role
-    })
+    return notifications
+      .filter((notification) => {
+        // If notification has a specific userId, only show it to that user
+        if (notification.userId !== undefined) {
+          return notification.userId === user.id
+        }
+        
+        // Otherwise, filter by audience/role
+        const audience = notification.audience || 'ALL'
+        if (audience === 'ALL') return true
+        return audience === user.role
+      })
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
   }, [notifications, user?.role, user?.id])
 
   const unreadNotificationCount = scopedNotifications.filter((notification) => !notification.read).length

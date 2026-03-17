@@ -265,7 +265,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
 
     set((state) => ({
-      notifications: [...state.notifications, notification],
+      notifications: [...state.notifications, notification].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()),
     }))
 
     // Automatically mark as read after the delay if not persistent
@@ -383,7 +383,9 @@ export const useUIStore = create<UIState>((set, get) => ({
         }
       })
 
-      set({ notifications })
+      set({ 
+        notifications: notifications.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()) 
+      })
     } catch (error) {
       console.error('Failed to fetch notifications:', error)
       // Don't throw - allow fallback to mock notifications
@@ -456,8 +458,11 @@ export const useUIStore = create<UIState>((set, get) => ({
         }
       )
 
-      // Combine: API notifications (persistent) + temporary notifications + recent persistent notifications
-      set({ notifications: [...newNotifications, ...temporaryNotifications, ...recentPersistentNotifications] })
+      // Combine and sort
+      const mergedNotifications = [...newNotifications, ...temporaryNotifications, ...recentPersistentNotifications]
+      set({ 
+        notifications: mergedNotifications.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()) 
+      })
     } catch (error) {
       console.error('Failed to sync notifications:', error)
       // Silently fail - don't interrupt user experience
