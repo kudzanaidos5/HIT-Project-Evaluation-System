@@ -730,7 +730,9 @@ def reset_evaluation_templates():
     from app.models.models import EvaluationTemplate, EvaluationCriterion, EvaluationType
     
     try:
-        # Clear existing
+        # Clear existing criteria first (since bulk delete doesn't cascade)
+        EvaluationCriterion.query.delete()
+        # Clear existing templates
         EvaluationTemplate.query.delete()
         
         # Default criteria
@@ -780,6 +782,8 @@ def reset_evaluation_templates():
         
     except Exception as e:
         db.session.rollback()
+        import traceback
+        print(f"Error resetting templates: {traceback.format_exc()}")
         return jsonify({"error": "Failed to reset templates", "details": str(e)}), 500
 
 # Projects Routes
@@ -1347,6 +1351,61 @@ def release_scores(project_id):
             "message": "Scores released to student successfully.",
             "project": project.to_dict()
         }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"Failed to release scores: {str(e)}"}), 500
+
+@api_bp.route('/projects/bulk-release-scores', methods=['POST'])
+@jwt_required()
+@require_admin_role()
+def bulk_release_scores():
+    """Admin endpoint to release scores for a group of projects based on level and study program"""
+    try:
+        data = request.json or {}
+        level_param = data.get('level')
+        study_program_id = data.get('study_program_id')
+        
+        # Build query for eligible projects
+        query = Project.query.filter_by(scores_released=False)
+        
+        if level_param and level_param != 'all':
+            query = query.filter(Project.level == ProjectLevel(int(level_param)))
+            
+        if study_program_id and study_program_id != 'all':
+            query = query.filter(Project.study_program_id == int(study_program_id))
+            
+        projects = query.all()
+        released_count = 0
+        
+        for project in projects:
+            # Check if both evaluations exist
+            evaluations = Evaluation.query.filter_by(project_id=project.id).all()
+            project_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PROJECT), None)
+            presentation_eval = next((e for e in evaluations if e.evaluation_type == EvaluationType.PRESENTATION), None)
+            
+            if project_eval and presentation_eval:
+                project.scores_released = True
+                released_count += 1
+                
+                # Create notification for student
+                student = project.student
+                if student and student.user:
+                    create_notification(
+                        user_id=student.user.id,
+                        title="Evaluation Results Released",
+                        message=f"Evaluation results for your project '{project.title}' have been released. Overall Score: {project_eval.overall_percentage}%, Grade: {project_eval.grade}",
+                        notification_type="success",
+                        action_label="View results",
+                        action_url="/dashboard#evaluation"
+                    )
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": f"Successfully released scores for {released_count} projects.",
+            "count": released_count
+        }), 200
+        
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": f"Failed to release scores: {str(e)}"}), 500

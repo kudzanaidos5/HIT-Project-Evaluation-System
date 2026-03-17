@@ -126,6 +126,18 @@ export const useReleaseScores = () => {
   })
 }
 
+export const useBulkReleaseScores = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (filters: { level?: number; study_program_id?: string }) => projectsAPI.bulkReleaseScores(filters),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.PROJECTS] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['students', 'me', 'projects'] })
+    },
+  })
+}
+
 // Evaluation Hooks
 export const useEvaluationTemplates = (level?: number) => {
   return useQuery({

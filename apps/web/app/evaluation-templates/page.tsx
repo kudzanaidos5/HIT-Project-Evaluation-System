@@ -22,15 +22,32 @@ export default function EvaluationTemplatesPage() {
     if (templates) {
       const currentTemplate = activeTab === 'PROJECT' ? templates.project : templates.presentation
       if (currentTemplate) {
+        // Use a functional update to ensure we're not mixing state
         setEditingData({
           name: currentTemplate.name,
           description: currentTemplate.description,
-          criteria: [...currentTemplate.criteria],
+          // Deep copy criteria to avoid reference issues
+          criteria: currentTemplate.criteria.map((c: any) => ({ ...c })),
           level: currentTemplate.level
         })
+      } else {
+        setEditingData(null)
       }
     }
   }, [templates, activeTab])
+
+  // Explicitly clear editing data when switching to ensure clean slate
+  const handleTabChange = (tab: 'PROJECT' | 'PRESENTATION') => {
+    if (tab === activeTab) return
+    setEditingData(null)
+    setActiveTab(tab)
+  }
+
+  const handleLevelChange = (level: 200 | 400 | undefined) => {
+    if (level === activeLevel) return
+    setEditingData(null)
+    setActiveLevel(level)
+  }
 
   const handleAddCriterion = () => {
     setEditingData({

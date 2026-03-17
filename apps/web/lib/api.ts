@@ -217,8 +217,12 @@ export const projectsAPI = {
     const response = await apiClient.post(`/projects/${id}/release-scores`)
     return response.data
   },
-  }
 
+  bulkReleaseScores: async (filters: { level?: number; study_program_id?: string }) => {
+    const response = await apiClient.post('/projects/bulk-release-scores', filters)
+    return response.data
+  },
+  }
 export const evaluationsAPI = {
   create: async (evaluationData: any) => {
     const response = await apiClient.post(`/projects/${evaluationData.projectId}/evaluations`, evaluationData.data)
