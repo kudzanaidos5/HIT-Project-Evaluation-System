@@ -367,7 +367,7 @@ class Notification(db.Model):
             'title': self.title,
             'message': self.message,
             'type': self.type.value if self.type else None,
-            'timestamp': self.created_at,
+            'timestamp': self.created_at.isoformat() + 'Z',
             'read': self.read,
             'actionLabel': self.action_label,
             'actionUrl': self.action_url,
